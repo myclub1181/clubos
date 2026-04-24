@@ -1,0 +1,310 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  OWNER
+  STAFF
+  MEMBER
+}
+
+enum MemberStatus {
+  ACTIVE
+  PROSPECT
+  INACTIVE
+  PAUSED
+}
+
+enum EventType {
+  CLASS
+  PRIVATE
+  CLINIC
+  CAMP
+  TOURNAMENT
+  OTHER
+}
+
+enum BookingStatus {
+  CONFIRMED
+  WAITLISTED
+  CANCELED
+  ATTENDED
+  NO_SHOW
+}
+
+enum TransactionStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+  REFUNDED
+}
+
+model Club {
+  id        String    @id @default(cuid())
+  name      String
+  slug      String    @unique
+  tier      String    @default("starter")
+  tagline   String?
+  sport     String?
+  primaryColor String? @default("#534AB7")
+  logoUrl   String?
+  stripeCustomerId String? @unique
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  locations     Location[]
+  users         User[]
+  members       Member[]
+  memberships   Membership[]
+  events        Event[]
+  messages      Message[]
+  announcements Announcement[]
+  transactions  Transaction[]
+  documents     Document[]
+
+  @@index([slug])
+  @@map("clubs")
+}
+
+model Location {
+  id        String    @id @default(cuid())
+  clubId    String
+  name      String
+  address   String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  club   Club    @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  events Event[]
+
+  @@index([clubId])
+  @@map("locations")
+}
+
+model User {
+  id             String    @id @default(cuid())
+  clubId         String
+  email          String
+  passwordHash   String
+  firstName      String
+  lastName       String
+  role           UserRole  @default(MEMBER)
+  emailVerified  DateTime?
+  resetToken     String?   @unique
+  resetExpires   DateTime?
+  lastLoginAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  deletedAt      DateTime?
+
+  club            Club             @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  staffProfile    StaffProfile?
+  memberProfile   Member?
+  guardianOf      Guardian[]       @relation("Guardian")
+  sentMessages    Message[]        @relation("Sender")
+  receivedMessages Message[]       @relation("Recipient")
+
+  @@unique([clubId, email])
+  @@index([clubId])
+  @@index([email])
+  @@map("users")
+}
+
+model StaffProfile {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+  title       String?
+  hourlyRate  Decimal? @db.Decimal(10, 2)
+  salary      Decimal? @db.Decimal(10, 2)
+  permissions Json     @default("{}")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("staff_profiles")
+}
+
+model Member {
+  id             String       @id @default(cuid())
+  clubId         String
+  userId         String?      @unique
+  firstName      String
+  lastName       String
+  dateOfBirth    DateTime?
+  status         MemberStatus @default(PROSPECT)
+  membershipId   String?
+  tags           String[]     @default([])
+  notes          String?
+  joinedAt       DateTime     @default(now())
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  deletedAt      DateTime?
+
+  club       Club        @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  user       User?       @relation(fields: [userId], references: [id])
+  membership Membership? @relation(fields: [membershipId], references: [id])
+  guardians  Guardian[]
+  bookings   Booking[]
+  transactions Transaction[]
+
+  @@index([clubId])
+  @@index([status])
+  @@map("members")
+}
+
+model Guardian {
+  id        String   @id @default(cuid())
+  userId    String
+  memberId  String
+  relationship String?
+  createdAt DateTime @default(now())
+
+  user   User   @relation("Guardian", fields: [userId], references: [id], onDelete: Cascade)
+  member Member @relation(fields: [memberId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, memberId])
+  @@map("guardians")
+}
+
+model Membership {
+  id          String   @id @default(cuid())
+  clubId      String
+  name        String
+  description String?
+  options     Json     @default("[]")
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  deletedAt   DateTime?
+
+  club    Club     @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  members Member[]
+
+  @@index([clubId])
+  @@map("memberships")
+}
+
+model Event {
+  id          String    @id @default(cuid())
+  clubId      String
+  locationId  String?
+  type        EventType
+  name        String
+  description String?
+  startsAt    DateTime
+  endsAt      DateTime
+  capacity    Int?
+  price       Decimal?  @db.Decimal(10, 2)
+  travelFee   Decimal?  @db.Decimal(10, 2)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  club     Club      @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  location Location? @relation(fields: [locationId], references: [id])
+  bookings Booking[]
+
+  @@index([clubId])
+  @@index([startsAt])
+  @@map("events")
+}
+
+model Booking {
+  id        String        @id @default(cuid())
+  eventId   String
+  memberId  String
+  status    BookingStatus @default(CONFIRMED)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  event  Event  @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  member Member @relation(fields: [memberId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, memberId])
+  @@index([eventId])
+  @@index([memberId])
+  @@map("bookings")
+}
+
+model Message {
+  id          String   @id @default(cuid())
+  clubId      String
+  senderId    String
+  recipientId String
+  body        String
+  readAt      DateTime?
+  createdAt   DateTime @default(now())
+
+  club      Club @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  sender    User @relation("Sender", fields: [senderId], references: [id], onDelete: Cascade)
+  recipient User @relation("Recipient", fields: [recipientId], references: [id], onDelete: Cascade)
+
+  @@index([clubId])
+  @@index([recipientId, readAt])
+  @@map("messages")
+}
+
+model Announcement {
+  id          String    @id @default(cuid())
+  clubId      String
+  title       String
+  body        String
+  publishAt   DateTime?
+  unpublishAt DateTime?
+  channels    String[]  @default([])
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  club Club @relation(fields: [clubId], references: [id], onDelete: Cascade)
+
+  @@index([clubId])
+  @@map("announcements")
+}
+
+model Transaction {
+  id                    String            @id @default(cuid())
+  clubId                String
+  memberId              String?
+  amount                Decimal           @db.Decimal(10, 2)
+  platformFee           Decimal?          @db.Decimal(10, 2)
+  status                TransactionStatus @default(PENDING)
+  stripePaymentIntentId String?           @unique
+  description           String?
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+
+  club   Club    @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  member Member? @relation(fields: [memberId], references: [id])
+
+  @@index([clubId])
+  @@index([memberId])
+  @@map("transactions")
+}
+
+model Document {
+  id          String    @id @default(cuid())
+  clubId      String
+  title       String
+  type        String
+  body        String?
+  required    Boolean   @default(false)
+  publishAt   DateTime?
+  unpublishAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  club Club @relation(fields: [clubId], references: [id], onDelete: Cascade)
+
+  @@index([clubId])
+  @@map("documents")
+}
