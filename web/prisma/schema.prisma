@@ -141,7 +141,7 @@ model Member {
   dateOfBirth    DateTime?
   status         MemberStatus @default(PROSPECT)
   membershipId   String?
-  tags           String[]     @default([])
+  tags           String     @default("")
   notes          String?
   joinedAt       DateTime     @default(now())
   createdAt      DateTime     @default(now())
@@ -259,7 +259,7 @@ model Announcement {
   body        String
   publishAt   DateTime?
   unpublishAt DateTime?
-  channels    String[]  @default([])
+  channels    String  @default("")
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
   deletedAt   DateTime?

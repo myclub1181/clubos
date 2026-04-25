@@ -7,6 +7,7 @@ import Link from "next/link";
 
 export default function SignupPage() {
   const router = useRouter();
+  const [mode, setMode] = useState<"create" | "join">("create");
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [email, setEmail] = useState("");
@@ -29,8 +30,8 @@ export default function SignupPage() {
           lastName,
           email,
           password,
-          clubSlug,
-          role: "MEMBER",
+          mode,
+          clubSlug: mode === "join" ? clubSlug : undefined,
         }),
       });
 
@@ -42,22 +43,21 @@ export default function SignupPage() {
         return;
       }
 
-      // Auto-login after signup
       const result = await signIn("credentials", {
         email,
         password,
-        clubSlug,
+        clubSlug: data.clubSlug,
         redirect: false,
       });
 
       setLoading(false);
 
       if (result?.error) {
-        setError("Account created but login failed. Try logging in.");
+        setError("Account created but login failed. Try signing in.");
         return;
       }
 
-      router.push("/dashboard");
+      router.push(mode === "create" ? "/onboarding" : "/dashboard");
     } catch {
       setError("Something went wrong");
       setLoading(false);
@@ -69,23 +69,48 @@ export default function SignupPage() {
       <div className="w-full max-w-md">
         <div className="bg-white rounded-xl shadow-sm border border-stone-200 p-8">
           <div className="mb-6">
-            <h1 className="text-2xl font-semibold text-stone-900 mb-1">Create your account</h1>
-            <p className="text-sm text-stone-500">Join your club on ClubOS</p>
+            <h1 className="text-2xl font-semibold text-stone-900 mb-1">Get started</h1>
+            <p className="text-sm text-stone-500">
+              {mode === "create" ? "Create your club on ClubOS" : "Join an existing club"}
+            </p>
+          </div>
+
+          <div className="flex gap-1 bg-stone-100 rounded-lg p-1 mb-6">
+            <button
+              type="button"
+              onClick={() => setMode("create")}
+              className={`flex-1 text-sm py-1.5 rounded-md transition ${
+                mode === "create" ? "bg-white shadow-sm text-stone-900 font-medium" : "text-stone-600"
+              }`}
+            >
+              Create a club
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode("join")}
+              className={`flex-1 text-sm py-1.5 rounded-md transition ${
+                mode === "join" ? "bg-white shadow-sm text-stone-900 font-medium" : "text-stone-600"
+              }`}
+            >
+              Join a club
+            </button>
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-stone-700 mb-1">Club</label>
-              <input
-                type="text"
-                value={clubSlug}
-                onChange={(e) => setClubSlug(e.target.value)}
-                placeholder="apex-wrestling"
-                required
-                className="w-full px-3 py-2 border border-stone-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-stone-900"
-              />
-              <p className="text-xs text-stone-400 mt-1">The club's unique identifier</p>
-            </div>
+            {mode === "join" && (
+              <div>
+                <label className="block text-sm font-medium text-stone-700 mb-1">Club code</label>
+                <input
+                  type="text"
+                  value={clubSlug}
+                  onChange={(e) => setClubSlug(e.target.value.toLowerCase())}
+                  placeholder="apex-wrestling"
+                  required
+                  className="w-full px-3 py-2 border border-stone-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-stone-900"
+                />
+                <p className="text-xs text-stone-400 mt-1">Ask your club for their code</p>
+              </div>
+            )}
 
             <div className="grid grid-cols-2 gap-3">
               <div>
@@ -145,7 +170,11 @@ export default function SignupPage() {
               disabled={loading}
               className="w-full py-2.5 bg-stone-900 text-white rounded-lg text-sm font-medium hover:bg-stone-700 disabled:opacity-50"
             >
-              {loading ? "Creating account…" : "Create account"}
+              {loading
+                ? "Creating account…"
+                : mode === "create"
+                ? "Create account & start setup"
+                : "Join club"}
             </button>
           </form>
 

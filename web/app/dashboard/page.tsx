@@ -1,89 +1,74 @@
 "use client";
 
-import { useSession, signOut } from "next-auth/react";
-import { useRouter } from "next/navigation";
-import { useEffect } from "react";
+import { useSession } from "next-auth/react";
 
 export default function DashboardPage() {
-  const { data: session, status } = useSession();
-  const router = useRouter();
-
-  useEffect(() => {
-    if (status === "unauthenticated") {
-      router.push("/login");
-    }
-  }, [status, router]);
-
-  if (status === "loading") {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-stone-50">
-        <div className="text-sm text-stone-500">Loading…</div>
-      </div>
-    );
-  }
+  const { data: session } = useSession();
 
   if (!session) return null;
 
   return (
-    <div className="min-h-screen bg-stone-50">
-      <header className="bg-white border-b border-stone-200">
-        <div className="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-md bg-stone-900 flex items-center justify-center">
-              <div className="w-3 h-3 rounded-full border-2 border-white" />
-            </div>
-            <span className="font-medium text-stone-900">ClubOS</span>
-          </div>
+    <div className="p-8 max-w-6xl">
+      <h1 className="text-3xl font-semibold text-stone-900 mb-2">
+        Welcome, {session.user.name.split(" ")[0]}
+      </h1>
+      <p className="text-stone-500 mb-8">
+        Here's what's happening at your club today.
+      </p>
 
-          <div className="flex items-center gap-4">
-            <div className="text-sm text-stone-700">
-              {session.user.name}
-              <span className="text-stone-400 ml-2">({session.user.role})</span>
-            </div>
-            <button
-              onClick={() => signOut({ callbackUrl: "/login" })}
-              className="text-sm px-3 py-1.5 rounded-md border border-stone-200 text-stone-700 hover:bg-stone-50"
-            >
-              Sign out
-            </button>
-          </div>
-        </div>
-      </header>
+      <div className="grid grid-cols-4 gap-4 mb-8">
+        <StatCard label="Active members" value="—" hint="Add your first member" />
+        <StatCard label="MRR" value="$0" hint="Set up memberships" />
+        <StatCard label="This week's bookings" value="0" hint="No bookings yet" />
+        <StatCard label="Outstanding balance" value="$0" hint="All caught up" />
+      </div>
 
-      <main className="max-w-5xl mx-auto px-6 py-10">
-        <h1 className="text-3xl font-semibold text-stone-900 mb-2">
-          Welcome, {session.user.name.split(" ")[0]}
-        </h1>
-        <p className="text-stone-500 mb-8">
-          Your dashboard is protected by authentication.
+      <div className="bg-white rounded-xl border border-stone-200 p-6">
+        <h2 className="text-lg font-medium text-stone-900 mb-2">Get started</h2>
+        <p className="text-sm text-stone-500 mb-4">
+          A few things to set up to make the most of ClubOS.
         </p>
-
-        <div className="bg-white rounded-xl border border-stone-200 p-6">
-          <h2 className="text-lg font-medium text-stone-900 mb-4">Session info</h2>
-          <div className="space-y-2 text-sm">
-            <div className="flex justify-between py-2 border-b border-stone-100">
-              <span className="text-stone-500">User ID</span>
-              <span className="text-stone-900 font-mono text-xs">{session.user.id}</span>
-            </div>
-            <div className="flex justify-between py-2 border-b border-stone-100">
-              <span className="text-stone-500">Email</span>
-              <span className="text-stone-900">{session.user.email}</span>
-            </div>
-            <div className="flex justify-between py-2 border-b border-stone-100">
-              <span className="text-stone-500">Role</span>
-              <span className="text-stone-900">{session.user.role}</span>
-            </div>
-            <div className="flex justify-between py-2">
-              <span className="text-stone-500">Club ID</span>
-              <span className="text-stone-900 font-mono text-xs">{session.user.clubId}</span>
-            </div>
-          </div>
+        <div className="space-y-2">
+          <Task label="Add your first member" href="/dashboard/members" done={false} />
+          <Task label="Create a membership plan" href="/dashboard/memberships" done={false} />
+          <Task label="Schedule your first event" href="/dashboard/events" done={false} />
+          <Task label="Connect Stripe for payments" href="/dashboard/settings" done={false} />
         </div>
-
-        <div className="mt-8 p-4 rounded-xl bg-green-50 border border-green-200 text-sm text-green-800">
-          ✓ Authentication is working. This page is only accessible when logged in.
-        </div>
-      </main>
+      </div>
     </div>
+  );
+}
+
+function StatCard({ label, value, hint }: { label: string; value: string; hint: string }) {
+  return (
+    <div className="bg-white rounded-xl border border-stone-200 p-5">
+      <div className="text-xs text-stone-500 uppercase tracking-wider mb-1">{label}</div>
+      <div className="text-2xl font-semibold text-stone-900 mb-1">{value}</div>
+      <div className="text-xs text-stone-400">{hint}</div>
+    </div>
+  );
+}
+
+function Task({ label, href, done }: { label: string; href: string; done: boolean }) {
+  return (
+    <a
+      href={href}
+      className="flex items-center gap-3 p-3 rounded-lg hover:bg-stone-50 border border-transparent hover:border-stone-200 transition"
+    >
+      <div
+        className="w-5 h-5 rounded-full border-2 flex items-center justify-center text-xs"
+        style={{
+          borderColor: done ? "#1D9E75" : "#D6D3D1",
+          background: done ? "#1D9E75" : "transparent",
+          color: "white",
+        }}
+      >
+        {done && "✓"}
+      </div>
+      <span className={`text-sm flex-1 ${done ? "line-through text-stone-400" : "text-stone-800"}`}>
+        {label}
+      </span>
+      <span className="text-xs text-stone-400">→</span>
+    </a>
   );
 }
