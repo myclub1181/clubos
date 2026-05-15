@@ -42,6 +42,16 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ error: "Provide a tier or promo code" }, { status: 400 });
     }
 
+    // Direct tier-set without a promo code is only allowed for the free tier.
+    // Paid tiers must go through Stripe Checkout (/api/club/subscription/checkout)
+    // so the club is actually billed.
+    if (!body.promoCode && newTier !== "starter") {
+      return NextResponse.json(
+        { error: "Paid plans require checkout. Use the Subscribe button instead." },
+        { status: 400 }
+      );
+    }
+
     const club = await prisma.club.update({
       where: { id: session.user.clubId },
       data: { tier: newTier },

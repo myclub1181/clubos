@@ -3,14 +3,23 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
+import { buildSessions, type DayOverride } from "../route";
+
+const TIME_REGEX = /^\d{2}:\d{2}$/;
+const dayOverrideSchema = z.object({
+  dayOfWeek: z.number().int().min(0).max(6),
+  startTime: z.string().regex(TIME_REGEX),
+  endTime: z.string().regex(TIME_REGEX),
+});
 
 const updateSchema = z.object({
   name: z.string().min(1).optional(),
   description: z.string().optional().nullable(),
   locationId: z.string().optional().nullable(),
   daysOfWeek: z.array(z.number().int().min(0).max(6)).min(1).optional(),
-  startTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
-  endTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+  startTime: z.string().regex(TIME_REGEX).optional(),
+  endTime: z.string().regex(TIME_REGEX).optional(),
+  dayOverrides: z.array(dayOverrideSchema).optional(),
   capacity: z.number().int().positive().optional().nullable(),
   recurrenceStartDate: z.string().optional(),
   recurrenceEndDate: z.string().optional().nullable(),
@@ -60,14 +69,62 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   if (!parsed.success) return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
 
   const { recurrenceStartDate, recurrenceEndDate, ...rest } = parsed.data;
+
+  // Clean overrides against the (possibly updated) daysOfWeek list
+  const effectiveDaysOfWeek = (rest.daysOfWeek ?? (cls.daysOfWeek as number[])) || [];
+  const incomingOverrides = rest.dayOverrides;
+  const cleanOverrides = incomingOverrides
+    ? incomingOverrides.filter((o) => effectiveDaysOfWeek.includes(o.dayOfWeek))
+    : undefined;
+
   const updated = await prisma.recurringClass.update({
     where: { id: params.id },
     data: {
       ...rest,
+      ...(cleanOverrides !== undefined ? { dayOverrides: cleanOverrides } : {}),
       ...(recurrenceStartDate !== undefined ? { recurrenceStartDate: new Date(recurrenceStartDate) } : {}),
       ...(recurrenceEndDate !== undefined ? { recurrenceEndDate: recurrenceEndDate ? new Date(recurrenceEndDate) : null } : {}),
     },
   });
+
+  // Regenerate future sessions when scheduling-relevant fields change. We only
+  // touch sessions in the future (>= today) so historical attendance stays
+  // intact. Canceled sessions are also preserved.
+  const scheduleChanged =
+    rest.daysOfWeek !== undefined ||
+    rest.startTime !== undefined ||
+    rest.endTime !== undefined ||
+    cleanOverrides !== undefined ||
+    recurrenceStartDate !== undefined ||
+    recurrenceEndDate !== undefined;
+
+  if (scheduleChanged) {
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    await prisma.classSession.deleteMany({
+      where: {
+        classId: updated.id,
+        date: { gte: todayStart },
+        canceled: false,
+        // Don't blow away sessions that already have attendance recorded
+        attendance: { none: {} },
+      },
+    });
+    const newSessions = buildSessions(
+      updated.id,
+      updated.clubId,
+      updated.daysOfWeek as number[],
+      updated.startTime,
+      updated.endTime,
+      (updated.dayOverrides as unknown as DayOverride[]) ?? [],
+      new Date(Math.max(todayStart.getTime(), updated.recurrenceStartDate.getTime())),
+      updated.recurrenceEndDate,
+    );
+    if (newSessions.length > 0) {
+      await prisma.classSession.createMany({ data: newSessions, skipDuplicates: true });
+    }
+  }
+
   return NextResponse.json(updated);
 }
 

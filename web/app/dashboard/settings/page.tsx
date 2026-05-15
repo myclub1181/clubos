@@ -35,10 +35,10 @@ const TIERS = [
   {
     id: "growth",
     name: "Growth",
-    price: "$49/mo",
-    fee: "1.25% per transaction",
+    price: "$50/mo",
+    fee: "0% transaction fee",
     color: "#fff",
-    features: ["Unlimited members", "Multiple locations", "Full messaging & groups", "Reports & analytics", "Bank integration (Plaid)", "Direct member messaging"],
+    features: ["Unlimited members", "0% transaction fees", "Reports & analytics", "Bank integration (Plaid)", "Direct member messaging", "Single location"],
   },
   {
     id: "pro",
@@ -46,7 +46,7 @@ const TIERS = [
     price: "$99/mo",
     fee: "0% transaction fee",
     color: "#fff",
-    features: ["Everything in Growth", "0% transaction fees", "Branded iOS & Android app", "Full analytics suite", "Priority support"],
+    features: ["Everything in Growth", "Up to 5 locations", "Branded iOS & Android app", "Email & SMS broadcasts", "Priority support"],
   },
   {
     id: "enterprise",
@@ -333,13 +333,31 @@ function PlanSection({ club, onSaved }: { club: Club; onSaved: () => void }) {
 
   async function upgradeTo(tier: string) {
     setUpgradingTo(tier);
-    const res = await fetch("/api/club/tier", {
-      method: "PATCH",
+    if (tier === "starter") {
+      // Downgrades go through the Stripe Customer Portal (cancel subscription).
+      const res = await fetch("/api/club/subscription/portal", { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      setUpgradingTo(null);
+      if (res.ok && data.url) {
+        window.location.href = data.url;
+      } else {
+        setPromoError(typeof data.error === "string" ? data.error : "Could not open billing portal");
+      }
+      return;
+    }
+    // Paid plans go through Stripe Checkout.
+    const res = await fetch("/api/club/subscription/checkout", {
+      method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ tier }),
     });
+    const data = await res.json().catch(() => ({}));
     setUpgradingTo(null);
-    if (res.ok) onSaved();
+    if (res.ok && data.url) {
+      window.location.href = data.url;
+    } else {
+      setPromoError(typeof data.error === "string" ? data.error : "Could not start checkout");
+    }
   }
 
   return (
@@ -419,7 +437,7 @@ function PlanSection({ club, onSaved }: { club: Club; onSaved: () => void }) {
                       disabled={upgradingTo === tier.id}
                       className="text-xs px-2.5 py-1 rounded-md border border-app-border text-text-primary hover:bg-app-bg disabled:opacity-50"
                     >
-                      {upgradingTo === tier.id ? "…" : "Switch"}
+                      {upgradingTo === tier.id ? "…" : tier.id === "starter" ? "Downgrade" : "Subscribe"}
                     </button>
                   )}
                 </div>
@@ -443,6 +461,13 @@ function PlanSection({ club, onSaved }: { club: Club; onSaved: () => void }) {
           Contact support for custom pricing.
         </p>
       </div>
+
+      <Link
+        href="/dashboard/settings/diagnostics"
+        className="block text-xs text-text-muted hover:text-text-primary underline"
+      >
+        Stripe diagnostics →
+      </Link>
     </div>
   );
 }

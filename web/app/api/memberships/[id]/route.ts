@@ -30,6 +30,9 @@ const updateSchema = z.object({
   allowBillingDayOverride: z.boolean().optional(),
   defaultBillingDay:      z.number().int().min(1).max(28).optional().nullable(),
   contractMonths:         z.number().int().positive().optional().nullable(),
+  trialEnabled:           z.boolean().optional(),
+  trialDays:              z.number().int().positive().max(365).optional().nullable(),
+  trialAppliesToReturning: z.boolean().optional(),
 });
 
 async function requireMembership(id: string, clubId: string) {
@@ -74,6 +77,10 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
         allowBillingDayOverride: data.allowBillingDayOverride,
         defaultBillingDay:       data.defaultBillingDay,
         contractMonths:          data.contractMonths,
+        trialEnabled:            data.trialEnabled,
+        // Force trialDays to null when trial is disabled to keep state clean
+        trialDays:               data.trialEnabled === false ? null : data.trialDays,
+        trialAppliesToReturning: data.trialAppliesToReturning,
       },
     });
 

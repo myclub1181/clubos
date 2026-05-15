@@ -4,6 +4,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { stripe, calculatePlatformFee } from "@/lib/stripe";
+import { sendBookingConfirmationEmail } from "@/lib/email";
 
 const schema = z.object({
   memberId: z.string(),
@@ -78,6 +79,27 @@ export async function POST(req: Request, { params }: { params: { id: string } })
                 addedById: session.user.id,
               },
             });
+        // Email: membership-covered registration confirmation
+        const club = await prisma.club.findUnique({
+          where: { id: session.user.clubId },
+          select: { name: true },
+        });
+        const to = member.isMinor
+          ? (member.guardianEmail || member.email)
+          : (member.email || member.guardianEmail);
+        if (to) {
+          const baseUrl = process.env.NEXTAUTH_URL || "http://localhost:3001";
+          sendBookingConfirmationEmail({
+            to,
+            firstName: member.firstName,
+            clubName: club?.name ?? "your club",
+            eventName: cls.name,
+            startsAt: classSession.startsAt,
+            endsAt: classSession.endsAt,
+            coveredByMembership: true,
+            portalUrl: `${baseUrl}/member/bookings`,
+          }).catch((e) => console.error("Class booking email failed:", e));
+        }
         return NextResponse.json({ coveredByMembership: true, attendanceRecordId: record.id });
       }
       if (pricingType === "MEMBERSHIP") {

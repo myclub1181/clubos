@@ -4,6 +4,7 @@ import bcrypt from "bcryptjs";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { sendStaffInviteEmail } from "@/lib/email";
 
 export async function GET(req: Request) {
   const session = await getServerSession(authOptions);
@@ -88,6 +89,29 @@ export async function POST(req: Request) {
       },
       include: { staffProfile: true },
     });
+
+    // Fire-and-forget welcome email. Don't block on failure — invite is created either way.
+    try {
+      const club = await prisma.club.findUnique({
+        where: { id: session.user.clubId },
+        select: { name: true },
+      });
+      const inviter = await prisma.user.findUnique({
+        where: { id: session.user.id },
+        select: { firstName: true, lastName: true },
+      });
+      const baseUrl = process.env.NEXTAUTH_URL || "http://localhost:3001";
+      await sendStaffInviteEmail({
+        to: user.email,
+        firstName: user.firstName,
+        clubName: club?.name ?? "your club",
+        inviterName: inviter ? `${inviter.firstName} ${inviter.lastName}`.trim() : "Your club owner",
+        loginUrl: `${baseUrl}/login`,
+        tempPassword: data.password,
+      });
+    } catch (emailErr) {
+      console.error("Staff invite email failed:", emailErr);
+    }
 
     return NextResponse.json(user, { status: 201 });
   } catch (err) {

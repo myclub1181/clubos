@@ -2,7 +2,7 @@ export type Tier = "starter" | "growth" | "pro" | "enterprise";
 
 export const TIER_PRICES: Record<Tier, { monthly: number; setup: number; label: string }> = {
   starter:    { monthly: 0,   setup: 0,  label: "Starter" },
-  growth:     { monthly: 49,  setup: 0,  label: "Growth" },
+  growth:     { monthly: 50,  setup: 0,  label: "Growth" },
   pro:        { monthly: 99,  setup: 50, label: "Pro" },
   enterprise: { monthly: 199, setup: 50, label: "Enterprise" },
 };
@@ -23,16 +23,19 @@ export const TIER_FEATURES = {
     classes: true,
     attendance: true,
   },
+  // Growth: $50/mo flat, NO transaction fee, single-location only. The trade-off
+  // vs. Starter is "skip the per-transaction cut entirely" — but if you need
+  // multiple locations you have to step up to Pro.
   growth: {
     maxMembers: null,
-    maxLocations: 3,
+    maxLocations: 1,
     directMessaging: true,
     emailSms: false,
     reports: true,
     plaid: true,
     brandedApp: false,
     multiLocation: false,
-    transactionFeePercent: 1.25,
+    transactionFeePercent: 0,
     announcements: true,
     documents: true,
     classes: true,
@@ -46,7 +49,7 @@ export const TIER_FEATURES = {
     reports: true,
     plaid: true,
     brandedApp: true,
-    multiLocation: false,
+    multiLocation: true,
     transactionFeePercent: 0,
     announcements: true,
     documents: true,

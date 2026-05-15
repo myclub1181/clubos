@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
+import { prisma } from "@/lib/prisma";
 import { writeFile, mkdir } from "fs/promises";
 import { join } from "path";
+import { randomBytes } from "crypto";
 
 const ALLOWED_IMAGE_TYPES = new Set([
   "image/jpeg", "image/png", "image/gif", "image/webp", "image/svg+xml",
@@ -14,6 +16,13 @@ const ALLOWED_DOC_TYPES = new Set([
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 ]);
 const MAX_SIZE = 10 * 1024 * 1024; // 10 MB
+
+// Storage root. Defaults to ./storage/uploads (NOT under /public so files are
+// not served as static assets — they go through /api/files/[id] which enforces
+// club scoping).
+function storageRoot(): string {
+  return process.env.UPLOADS_DIR || join(process.cwd(), "storage", "uploads");
+}
 
 export async function POST(req: Request) {
   const session = await getServerSession(authOptions);
@@ -40,12 +49,31 @@ export async function POST(req: Request) {
   const bytes = await file.arrayBuffer();
   const buffer = Buffer.from(bytes);
 
-  const uploadDir = join(process.cwd(), "public", "uploads");
-  await mkdir(uploadDir, { recursive: true });
+  const root = storageRoot();
+  await mkdir(root, { recursive: true });
 
   const rawExt = file.name.split(".").pop()?.toLowerCase().replace(/[^a-z0-9]/g, "") || "bin";
-  const filename = `${Date.now()}-${Math.random().toString(36).slice(2)}.${rawExt}`;
-  await writeFile(join(uploadDir, filename), buffer);
+  // Unguessable random storage key. Different from the row id so even leaked
+  // ids can't be used to construct a disk path.
+  const storageKey = `${randomBytes(16).toString("hex")}.${rawExt}`;
+  await writeFile(join(root, storageKey), buffer);
 
-  return NextResponse.json({ url: `/uploads/${filename}` });
+  const kind = type === "document" && !ALLOWED_IMAGE_TYPES.has(file.type) ? "DOCUMENT" : "IMAGE";
+  const record = await prisma.uploadedFile.create({
+    data: {
+      clubId: session.user.clubId,
+      uploaderId: session.user.id,
+      storageKey,
+      originalName: file.name,
+      mimeType: file.type,
+      sizeBytes: file.size,
+      kind,
+    },
+  });
+
+  return NextResponse.json({
+    id: record.id,
+    // /api/files/[id] is the only way to fetch the bytes; it scopes by clubId.
+    url: `/api/files/${record.id}`,
+  });
 }

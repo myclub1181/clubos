@@ -8,6 +8,8 @@ type PricingOption =
   | { type: "member" | "nonmember" | "dropin"; price: number }
   | { type: "membership"; membershipId: string };
 
+type DayOverride = { dayOfWeek: number; startTime: string; endTime: string };
+
 type RecurringClass = {
   id: string;
   name: string;
@@ -15,6 +17,7 @@ type RecurringClass = {
   daysOfWeek: number[];
   startTime: string;
   endTime: string;
+  dayOverrides?: DayOverride[];
   capacity: number | null;
   recurrenceStartDate: string;
   recurrenceEndDate: string | null;
@@ -67,6 +70,10 @@ type FormData = {
   daysOfWeek: number[];
   startTime: string;
   endTime: string;
+  // Map of dayOfWeek -> override times. Days without an entry use the
+  // base startTime/endTime. UI lets the owner expand any selected day and
+  // set custom times for that day only.
+  dayOverrides: Record<number, { startTime: string; endTime: string }>;
   capacity: string;
   recurrenceStartDate: string;
   recurrenceEndDate: string;
@@ -87,6 +94,7 @@ const emptyForm = (): FormData => ({
   daysOfWeek: [],
   startTime: "18:00",
   endTime: "19:30",
+  dayOverrides: {},
   capacity: "",
   recurrenceStartDate: new Date().toISOString().split("T")[0],
   recurrenceEndDate: "",
@@ -112,6 +120,10 @@ function formFromClass(c: RecurringClass): FormData {
     daysOfWeek: c.daysOfWeek ?? [],
     startTime: c.startTime,
     endTime: c.endTime,
+    dayOverrides: (c.dayOverrides ?? []).reduce((acc, o) => {
+      acc[o.dayOfWeek] = { startTime: o.startTime, endTime: o.endTime };
+      return acc;
+    }, {} as Record<number, { startTime: string; endTime: string }>),
     capacity: c.capacity?.toString() ?? "",
     recurrenceStartDate: c.recurrenceStartDate.split("T")[0],
     recurrenceEndDate: c.recurrenceEndDate?.split("T")[0] ?? "",
@@ -175,6 +187,11 @@ function ClassModal({
       pricingOptions.push({ type: "membership", membershipId });
     }
 
+    // Only send overrides for currently-selected days; drop empty/invalid rows.
+    const dayOverrides = Object.entries(form.dayOverrides)
+      .filter(([d, t]) => form.daysOfWeek.includes(Number(d)) && t.startTime && t.endTime)
+      .map(([d, t]) => ({ dayOfWeek: Number(d), startTime: t.startTime, endTime: t.endTime }));
+
     const payload = {
       name: form.name,
       description: form.description || null,
@@ -182,6 +199,7 @@ function ClassModal({
       daysOfWeek: form.daysOfWeek,
       startTime: form.startTime,
       endTime: form.endTime,
+      dayOverrides,
       capacity: form.capacity ? parseInt(form.capacity) : null,
       recurrenceStartDate: form.recurrenceStartDate,
       recurrenceEndDate: form.recurrenceEndDate || null,
@@ -280,10 +298,12 @@ function ClassModal({
             </div>
           </div>
 
-          {/* Times */}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-medium text-text-primary mb-1">Start Time *</label>
+          {/* Default times (used for any day that doesn't have its own override) */}
+          <div>
+            <label className="block text-xs font-medium text-text-primary mb-1">
+              Default times <span className="text-text-muted font-normal">(apply to every selected day unless overridden below)</span>
+            </label>
+            <div className="grid grid-cols-2 gap-3">
               <input
                 required
                 type="time"
@@ -291,9 +311,6 @@ function ClassModal({
                 onChange={(e) => set("startTime", e.target.value)}
                 className="w-full border border-app-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand"
               />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-text-primary mb-1">End Time *</label>
               <input
                 required
                 type="time"
@@ -303,6 +320,73 @@ function ClassModal({
               />
             </div>
           </div>
+
+          {/* Per-day overrides */}
+          {form.daysOfWeek.length > 0 && (
+            <div>
+              <label className="block text-xs font-medium text-text-primary mb-1">
+                Different times for specific days? <span className="text-text-muted font-normal">(optional)</span>
+              </label>
+              <p className="text-[11px] text-text-muted mb-2">
+                Toggle a day to set custom times for just that day. Unset days keep the defaults above.
+              </p>
+              <div className="space-y-1.5">
+                {[...form.daysOfWeek].sort((a, b) => a - b).map((d) => {
+                  const dayName = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][d];
+                  const override = form.dayOverrides[d];
+                  const enabled = !!override;
+                  return (
+                    <div key={d} className="border border-app-border rounded-lg p-2.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm text-text-primary">{dayName}</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const next = { ...form.dayOverrides };
+                            if (enabled) {
+                              delete next[d];
+                            } else {
+                              next[d] = { startTime: form.startTime, endTime: form.endTime };
+                            }
+                            set("dayOverrides", next);
+                          }}
+                          className={`text-xs px-2 py-1 rounded-md border ${
+                            enabled
+                              ? "border-brand text-brand bg-brand/10"
+                              : "border-app-border text-text-muted hover:bg-app-bg"
+                          }`}
+                        >
+                          {enabled ? "Custom times" : "Use defaults"}
+                        </button>
+                      </div>
+                      {enabled && (
+                        <div className="grid grid-cols-2 gap-2 mt-2">
+                          <input
+                            type="time"
+                            value={override.startTime}
+                            onChange={(e) => {
+                              const next = { ...form.dayOverrides, [d]: { ...override, startTime: e.target.value } };
+                              set("dayOverrides", next);
+                            }}
+                            className="w-full border border-app-border rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand"
+                          />
+                          <input
+                            type="time"
+                            value={override.endTime}
+                            onChange={(e) => {
+                              const next = { ...form.dayOverrides, [d]: { ...override, endTime: e.target.value } };
+                              set("dayOverrides", next);
+                            }}
+                            className="w-full border border-app-border rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand"
+                          />
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {/* Capacity */}
           <div>

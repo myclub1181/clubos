@@ -43,6 +43,9 @@ const createSchema = z.object({
   allowBillingDayOverride: z.boolean().default(false),
   defaultBillingDay:       z.number().int().min(1).max(28).optional().nullable(),
   contractMonths:          z.number().int().positive().optional().nullable(),
+  trialEnabled:            z.boolean().default(false),
+  trialDays:               z.number().int().positive().max(365).optional().nullable(),
+  trialAppliesToReturning: z.boolean().default(false),
 });
 
 export async function POST(req: Request) {
@@ -69,6 +72,9 @@ export async function POST(req: Request) {
         allowBillingDayOverride: data.allowBillingDayOverride,
         defaultBillingDay:       data.defaultBillingDay ?? null,
         contractMonths:          data.contractMonths ?? null,
+        trialEnabled:            data.trialEnabled,
+        trialDays:               data.trialEnabled ? (data.trialDays ?? null) : null,
+        trialAppliesToReturning: data.trialAppliesToReturning,
       },
     });
 

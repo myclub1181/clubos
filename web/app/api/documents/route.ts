@@ -24,6 +24,7 @@ const createSchema = z.object({
   requiresGuardianSignature: z.boolean().default(false),
   deliveryTrigger: z.enum(["MANUAL", "MEMBERSHIP", "EVENT", "MESSAGE"]).default("MANUAL"),
   expiresAt: z.string().nullable().optional(),
+  signatureValidForDays: z.number().int().positive().nullable().optional(),
 });
 
 export async function POST(req: Request) {
@@ -44,6 +45,7 @@ export async function POST(req: Request) {
         requiresGuardianSignature: data.requiresGuardianSignature,
         deliveryTrigger: data.deliveryTrigger,
         expiresAt: data.expiresAt ? new Date(data.expiresAt) : null,
+        signatureValidForDays: data.signatureValidForDays ?? null,
       },
     });
     return NextResponse.json(doc, { status: 201 });

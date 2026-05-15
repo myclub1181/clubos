@@ -14,6 +14,7 @@ const updateSchema = z.object({
   expiresAt: z.string().nullable().optional(),
   publishAt: z.string().nullable().optional(),
   unpublishAt: z.string().nullable().optional(),
+  signatureValidForDays: z.number().int().positive().nullable().optional(),
 });
 
 async function getDoc(id: string, clubId: string) {
@@ -64,6 +65,7 @@ export async function PATCH(
         ...(data.unpublishAt !== undefined && {
           unpublishAt: data.unpublishAt ? new Date(data.unpublishAt) : null,
         }),
+        ...(data.signatureValidForDays !== undefined && { signatureValidForDays: data.signatureValidForDays }),
       },
     });
     return NextResponse.json(updated);

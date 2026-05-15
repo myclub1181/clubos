@@ -4,6 +4,47 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { stripe, calculatePlatformFee } from "@/lib/stripe";
+import { sendBookingConfirmationEmail } from "@/lib/email";
+
+async function emailBookingConfirmation(args: {
+  memberId: string;
+  clubName: string;
+  eventName: string;
+  startsAt: Date;
+  endsAt: Date;
+  coveredByMembership: boolean;
+}) {
+  const m = await prisma.member.findUnique({
+    where: { id: args.memberId },
+    select: {
+      firstName: true,
+      email: true,
+      isMinor: true,
+      guardianEmail: true,
+      guardian: { select: { email: true } },
+    },
+  });
+  if (!m) return;
+  const to = m.isMinor
+    ? (m.guardian?.email || m.guardianEmail || m.email)
+    : (m.email || m.guardianEmail);
+  if (!to) return;
+  const baseUrl = process.env.NEXTAUTH_URL || "http://localhost:3001";
+  try {
+    await sendBookingConfirmationEmail({
+      to,
+      firstName: m.firstName,
+      clubName: args.clubName,
+      eventName: args.eventName,
+      startsAt: args.startsAt,
+      endsAt: args.endsAt,
+      coveredByMembership: args.coveredByMembership,
+      portalUrl: `${baseUrl}/member/bookings`,
+    });
+  } catch (e) {
+    console.error("Booking email failed:", e);
+  }
+}
 
 const schema = z.object({
   pricingType: z.enum(["MEMBER", "NON_MEMBER", "DROP_IN"]).default("MEMBER"),
@@ -61,6 +102,17 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       if (activeSub) {
         const status = event.capacity && event._count.bookings >= event.capacity ? "WAITLISTED" : "CONFIRMED";
         await prisma.booking.create({ data: { eventId: event.id, memberId: member.id, status } });
+        if (status === "CONFIRMED") {
+          const club = await prisma.club.findUnique({ where: { id: session.user.clubId }, select: { name: true } });
+          emailBookingConfirmation({
+            memberId: member.id,
+            clubName: club?.name ?? "your club",
+            eventName: event.name,
+            startsAt: event.startsAt,
+            endsAt: event.endsAt,
+            coveredByMembership: true,
+          });
+        }
         return NextResponse.json({ coveredByMembership: true, status });
       }
     }
@@ -70,6 +122,17 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     if (!hasPrice) {
       const status = event.capacity && event._count.bookings >= event.capacity ? "WAITLISTED" : "CONFIRMED";
       await prisma.booking.create({ data: { eventId: event.id, memberId: member.id, status } });
+      if (status === "CONFIRMED") {
+        const club = await prisma.club.findUnique({ where: { id: session.user.clubId }, select: { name: true } });
+        emailBookingConfirmation({
+          memberId: member.id,
+          clubName: club?.name ?? "your club",
+          eventName: event.name,
+          startsAt: event.startsAt,
+          endsAt: event.endsAt,
+          coveredByMembership: false,
+        });
+      }
       return NextResponse.json({ free: true, status });
     }
 

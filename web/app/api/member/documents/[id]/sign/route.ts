@@ -1,0 +1,99 @@
+import { NextResponse } from "next/server";
+import { z } from "zod";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/lib/auth";
+import { prisma } from "@/lib/prisma";
+
+const schema = z.object({
+  memberId: z.string().optional(),
+});
+
+// POST /api/member/documents/[id]/sign
+// Body: { memberId?: string }
+// Records an acknowledgement. If memberId omitted, defaults to the signer's own
+// member profile. Parents may sign on behalf of linked children (validated
+// against MemberGuardianUser). If the document requires a guardian signature
+// and the target member is a minor, the signer must be a guardian — not the
+// minor themselves.
+export async function POST(req: Request, { params }: { params: { id: string } }) {
+  const session = await getServerSession(authOptions);
+  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  let body: z.infer<typeof schema>;
+  try {
+    body = schema.parse(await req.json().catch(() => ({})));
+  } catch (err) {
+    if (err instanceof z.ZodError) return NextResponse.json({ error: err.errors[0].message }, { status: 400 });
+    throw err;
+  }
+
+  const document = await prisma.document.findFirst({
+    where: { id: params.id, clubId: session.user.clubId, deletedAt: null },
+  });
+  if (!document) return NextResponse.json({ error: "Document not found" }, { status: 404 });
+
+  const viewer = await prisma.user.findUnique({
+    where: { id: session.user.id },
+    select: {
+      firstName: true,
+      lastName: true,
+      memberProfile: { select: { id: true, isMinor: true } },
+      guardianOf: { select: { member: { select: { id: true, isMinor: true } } } },
+    },
+  });
+  if (!viewer) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  // Resolve target member
+  const targetMemberId = body.memberId ?? viewer.memberProfile?.id;
+  if (!targetMemberId) {
+    return NextResponse.json({ error: "No member context for signing" }, { status: 400 });
+  }
+
+  const isSelf = viewer.memberProfile?.id === targetMemberId;
+  const linkedChild = viewer.guardianOf.find((g) => g.member.id === targetMemberId);
+  if (!isSelf && !linkedChild) {
+    return NextResponse.json({ error: "You don't have access to sign for this member" }, { status: 403 });
+  }
+
+  const targetIsMinor = isSelf ? !!viewer.memberProfile?.isMinor : !!linkedChild?.member.isMinor;
+
+  // Guardian-signature rule: if the document requires guardian sig and the
+  // target is a minor, the signer must be a guardian (not the minor signing
+  // their own record).
+  if (document.requiresGuardianSignature && targetIsMinor && isSelf) {
+    return NextResponse.json(
+      { error: "This document requires a parent or guardian signature" },
+      { status: 403 }
+    );
+  }
+
+  const relationship = isSelf ? "SELF" : "GUARDIAN";
+  const signerName = `${viewer.firstName} ${viewer.lastName}`.trim();
+
+  const ipHeader = req.headers.get("x-forwarded-for") || req.headers.get("x-real-ip");
+  const ipAddress = ipHeader ? ipHeader.split(",")[0].trim() : null;
+  const userAgent = req.headers.get("user-agent");
+
+  const signature = await prisma.documentSignature.upsert({
+    where: { documentId_memberId: { documentId: document.id, memberId: targetMemberId } },
+    update: {
+      signerUserId: session.user.id,
+      signerName,
+      relationship,
+      signedAt: new Date(),
+      ipAddress,
+      userAgent,
+    },
+    create: {
+      documentId: document.id,
+      memberId: targetMemberId,
+      signerUserId: session.user.id,
+      signerName,
+      relationship,
+      ipAddress,
+      userAgent,
+    },
+  });
+
+  return NextResponse.json({ ok: true, signature });
+}

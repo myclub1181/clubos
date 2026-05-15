@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type Booking = {
   id: string;
@@ -14,6 +14,14 @@ type Booking = {
     capacity: number | null;
     customEventType: { name: string; color: string; textColor: string } | null;
   };
+};
+
+type MemberContext = {
+  id: string;
+  firstName: string;
+  lastName: string;
+  kind: "self" | "child";
+  bookings: Booking[];
 };
 
 const builtInColors: Record<string, { bg: string; fg: string }> = {
@@ -46,7 +54,8 @@ function getEventLabel(b: Booking) {
 }
 
 export default function MemberBookingsPage() {
-  const [bookings, setBookings] = useState<Booking[]>([]);
+  const [members, setMembers] = useState<MemberContext[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<"upcoming" | "past" | "all">("upcoming");
 
@@ -54,15 +63,35 @@ export default function MemberBookingsPage() {
     fetch("/api/member/portal")
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
-        if (d?.user?.memberProfile?.bookings) {
-          setBookings(d.user.memberProfile.bookings);
+        const list: MemberContext[] = [];
+        if (d?.user?.memberProfile) {
+          list.push({
+            id: d.user.memberProfile.id,
+            firstName: d.user.memberProfile.firstName,
+            lastName: d.user.memberProfile.lastName,
+            kind: "self",
+            bookings: d.user.memberProfile.bookings ?? [],
+          });
         }
+        for (const g of d?.user?.guardianOf ?? []) {
+          list.push({
+            id: g.member.id,
+            firstName: g.member.firstName,
+            lastName: g.member.lastName,
+            kind: "child",
+            bookings: g.member.bookings ?? [],
+          });
+        }
+        setMembers(list);
+        setActiveId(list[0]?.id ?? null);
         setLoading(false);
       });
   }, []);
 
+  const active = useMemo(() => members.find((m) => m.id === activeId), [members, activeId]);
+
   const now = new Date();
-  const filtered = bookings.filter((b) => {
+  const filtered = (active?.bookings ?? []).filter((b) => {
     const start = new Date(b.event.startsAt);
     if (filter === "upcoming") return start >= now && b.status !== "CANCELED";
     if (filter === "past") return start < now || b.status === "CANCELED";
@@ -75,6 +104,27 @@ export default function MemberBookingsPage() {
         <h1 className="text-2xl font-semibold text-stone-900 mb-1">My Bookings</h1>
         <p className="text-sm text-stone-500">All your class and event registrations.</p>
       </div>
+
+      {members.length > 1 && (
+        <div className="mb-4">
+          <p className="text-xs uppercase tracking-wider text-stone-500 font-medium mb-1.5">Viewing bookings for</p>
+          <div className="flex flex-wrap gap-2">
+            {members.map((m) => (
+              <button
+                key={m.id}
+                onClick={() => setActiveId(m.id)}
+                className={`px-3 py-1.5 rounded-full text-sm border transition ${
+                  activeId === m.id
+                    ? "border-stone-900 bg-stone-900 text-white"
+                    : "border-stone-200 text-stone-600 bg-white hover:bg-stone-50"
+                }`}
+              >
+                {m.kind === "self" ? "Me" : `${m.firstName} ${m.lastName}`}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="flex gap-1 bg-stone-100 rounded-lg p-1 mb-6 w-fit">
         {(["upcoming", "past", "all"] as const).map((f) => (
@@ -92,12 +142,19 @@ export default function MemberBookingsPage() {
 
       {loading ? (
         <div className="text-center py-8 text-stone-400 text-sm">Loading…</div>
+      ) : !active ? (
+        <div className="bg-white rounded-xl border border-stone-200 p-12 text-center">
+          <p className="text-base font-medium text-stone-900 mb-1">No member context</p>
+          <p className="text-sm text-stone-500">Link a child or contact your club to get started.</p>
+        </div>
       ) : filtered.length === 0 ? (
         <div className="bg-white rounded-xl border border-stone-200 p-12 text-center">
           <p className="text-3xl mb-2 text-stone-200">◷</p>
           <p className="text-base font-medium text-stone-900 mb-1">No bookings found</p>
           <p className="text-sm text-stone-500">
-            {filter === "upcoming" ? "You have no upcoming bookings." : "No bookings in this category."}
+            {filter === "upcoming"
+              ? `${active.kind === "self" ? "You have" : `${active.firstName} has`} no upcoming bookings.`
+              : "No bookings in this category."}
           </p>
         </div>
       ) : (

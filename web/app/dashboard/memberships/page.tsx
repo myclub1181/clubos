@@ -23,6 +23,9 @@ type Membership = {
   allowBillingDayOverride: boolean;
   defaultBillingDay: number | null;
   contractMonths: number | null;
+  trialEnabled: boolean;
+  trialDays: number | null;
+  trialAppliesToReturning: boolean;
   createdAt: string;
   _count: { members: number };
 };
@@ -274,6 +277,9 @@ function MembershipModal({ membership, onClose, onSaved }: { membership: Members
   const [allowBillingDayOverride, setAllowBillingDayOverride] = useState(membership?.allowBillingDayOverride ?? false);
   const [defaultBillingDay, setDefaultBillingDay] = useState(membership?.defaultBillingDay ? String(membership.defaultBillingDay) : "");
   const [contractMonths, setContractMonths] = useState(membership?.contractMonths ? String(membership.contractMonths) : "");
+  const [trialEnabled, setTrialEnabled] = useState(membership?.trialEnabled ?? false);
+  const [trialDays, setTrialDays] = useState(membership?.trialDays ? String(membership.trialDays) : "14");
+  const [trialAppliesToReturning, setTrialAppliesToReturning] = useState(membership?.trialAppliesToReturning ?? false);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
 
@@ -304,6 +310,9 @@ function MembershipModal({ membership, onClose, onSaved }: { membership: Members
         autoRenewDefault, allowManualRenewal, allowCustomDates, allowBillingDayOverride,
         defaultBillingDay: defaultBillingDay ? parseInt(defaultBillingDay, 10) : null,
         contractMonths: contractMonths ? parseInt(contractMonths, 10) : null,
+        trialEnabled,
+        trialDays: trialEnabled ? (parseInt(trialDays, 10) || null) : null,
+        trialAppliesToReturning,
       }),
     });
 
@@ -383,6 +392,46 @@ function MembershipModal({ membership, onClose, onSaved }: { membership: Members
                 <input type="number" min="1" value={contractMonths} onChange={(e) => setContractMonths(e.target.value)} placeholder="None" className="w-full px-3 py-2 border border-app-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand" />
               </div>
             </div>
+          </div>
+
+          {/* Trial rules */}
+          <div className="pt-2 border-t border-app-border space-y-3">
+            <p className="text-xs uppercase tracking-wider text-text-muted font-medium">Free trial</p>
+
+            <div className="flex items-center justify-between">
+              <div>
+                <label className="text-sm text-text-primary block">Offer a free trial</label>
+                <p className="text-[11px] text-text-muted">Members aren't charged until the trial ends. Their card is collected at signup.</p>
+              </div>
+              <button type="button" onClick={() => setTrialEnabled(!trialEnabled)} className={`relative inline-flex h-5 w-9 rounded-full transition flex-shrink-0 ${trialEnabled ? "bg-brand" : "bg-app-border"}`}>
+                <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transition-transform mt-0.5 ${trialEnabled ? "translate-x-4" : "translate-x-0.5"}`} />
+              </button>
+            </div>
+
+            {trialEnabled && (
+              <>
+                <div>
+                  <label className="block text-sm font-medium text-text-primary mb-1">Trial length <span className="text-text-muted font-normal">(days)</span></label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="365"
+                    value={trialDays}
+                    onChange={(e) => setTrialDays(e.target.value)}
+                    className="w-32 px-3 py-2 border border-app-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand"
+                  />
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <label className="text-sm text-text-primary block">Allow returning members to use the trial again</label>
+                    <p className="text-[11px] text-text-muted">Off = trial is one-time per member, on this plan.</p>
+                  </div>
+                  <button type="button" onClick={() => setTrialAppliesToReturning(!trialAppliesToReturning)} className={`relative inline-flex h-5 w-9 rounded-full transition flex-shrink-0 ${trialAppliesToReturning ? "bg-brand" : "bg-app-border"}`}>
+                    <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transition-transform mt-0.5 ${trialAppliesToReturning ? "translate-x-4" : "translate-x-0.5"}`} />
+                  </button>
+                </div>
+              </>
+            )}
           </div>
 
           {/* Purchase options */}

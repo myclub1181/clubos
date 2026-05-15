@@ -166,6 +166,30 @@ export async function POST(req: Request) {
       },
     });
 
+    // Fire-and-forget welcome email so the member (or guardian for minors) can set
+    // up portal access. Skips silently if no email is on file.
+    const portalRecipient = data.isMinor
+      ? (data.guardianEmail || data.email || null)
+      : (data.email || data.guardianEmail || null);
+    if (portalRecipient) {
+      try {
+        const club = await prisma.club.findUnique({
+          where: { id: session.user.clubId },
+          select: { name: true },
+        });
+        const { sendWelcomeEmail } = await import("@/lib/email");
+        const baseUrl = process.env.NEXTAUTH_URL || "http://localhost:3001";
+        await sendWelcomeEmail({
+          to: portalRecipient.toLowerCase(),
+          firstName: data.isMinor ? (data.guardianName?.split(" ")[0] || "there") : data.firstName,
+          clubName: club?.name ?? "your club",
+          loginUrl: `${baseUrl}/member/signup`,
+        });
+      } catch (emailErr) {
+        console.error("Member welcome email failed:", emailErr);
+      }
+    }
+
     return NextResponse.json(member, { status: 201 });
   } catch (err) {
     if (err instanceof z.ZodError) {

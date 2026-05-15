@@ -16,23 +16,75 @@ const TIER_ORDER: Tier[] = ["starter", "growth", "pro", "enterprise"];
 
 export default function BillingSettingsPage() {
   const { data: session } = useSession();
+  void session;
   const params = useSearchParams();
   const [status, setStatus] = useState<Status | null>(null);
+  const [clubTier, setClubTier] = useState<Tier>("starter");
+  const [subscriptionStatus, setSubscriptionStatus] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState("");
-  const currentTier = (session?.user as any)?.tier ?? "starter";
+  const currentTier: Tier = clubTier;
 
   const justConnected = params.get("connected") === "true";
+  const upgradedTier = params.get("upgraded");
+  const upgradeCanceled = params.get("canceled") === "true";
+  const [upgradingTo, setUpgradingTo] = useState<string | null>(null);
+  const [openingPortal, setOpeningPortal] = useState(false);
 
   async function load() {
     setLoading(true);
-    const res = await fetch("/api/stripe/status");
-    if (res.ok) setStatus(await res.json());
+    const [statusRes, infoRes] = await Promise.all([
+      fetch("/api/stripe/status"),
+      fetch("/api/club/info"),
+    ]);
+    if (statusRes.ok) setStatus(await statusRes.json());
+    if (infoRes.ok) {
+      const info = await infoRes.json();
+      const tier = (info?.tier ?? "starter") as Tier;
+      setClubTier(["starter", "growth", "pro", "enterprise"].includes(tier) ? tier : "starter");
+      setSubscriptionStatus(info?.subscriptionStatus ?? null);
+    }
     setLoading(false);
   }
 
   useEffect(() => { load(); }, []);
+
+  async function startUpgrade(tier: Tier) {
+    if (tier === "starter") return;
+    setUpgradingTo(tier);
+    setError("");
+    try {
+      const res = await fetch("/api/club/subscription/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tier }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.url) {
+        setError(typeof data.error === "string" ? data.error : "Could not start checkout");
+        setUpgradingTo(null);
+        return;
+      }
+      window.location.href = data.url;
+    } catch (err) {
+      setError(String(err));
+      setUpgradingTo(null);
+    }
+  }
+
+  async function openManageBilling() {
+    setOpeningPortal(true);
+    setError("");
+    const res = await fetch("/api/club/subscription/portal", { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    setOpeningPortal(false);
+    if (!res.ok || !data.url) {
+      setError(typeof data.error === "string" ? data.error : "Could not open billing portal");
+      return;
+    }
+    window.location.href = data.url;
+  }
 
   async function handleConnect() {
     setError("");
@@ -65,6 +117,17 @@ export default function BillingSettingsPage() {
       {justConnected && (
         <div className="mb-4 px-4 py-3 rounded-lg bg-lime-accent border border-lime-accent/40 text-sm text-text-primary">
           ✓ Stripe onboarding complete.
+        </div>
+      )}
+
+      {upgradedTier && (
+        <div className="mb-4 px-4 py-3 rounded-lg bg-lime-accent border border-lime-accent/40 text-sm text-text-primary">
+          ✓ Upgraded to {upgradedTier.charAt(0).toUpperCase() + upgradedTier.slice(1)}. It may take a moment to reflect.
+        </div>
+      )}
+      {upgradeCanceled && (
+        <div className="mb-4 px-4 py-3 rounded-lg bg-app-bg border border-app-border text-sm text-text-muted">
+          Checkout canceled — no charge was made.
         </div>
       )}
 
@@ -125,7 +188,7 @@ export default function BillingSettingsPage() {
         <h3 className="text-sm font-semibold text-text-primary mb-2">How payments work</h3>
         <ul className="text-xs text-text-muted space-y-1.5 leading-relaxed">
           <li>· Members pay with their card directly to your Stripe account</li>
-          <li>· AthletixOS takes a small platform fee (2.5% Starter, 1.25% Growth, 0% Pro/Enterprise)</li>
+          <li>· AthletixOS takes a small platform fee (2.5% Starter; 0% on Growth, Pro, Enterprise)</li>
           <li>· You handle payouts, taxes, and refunds through Stripe</li>
           <li>· Test card: <code className="bg-white px-1 py-0.5 rounded">4242 4242 4242 4242</code> — any future date / any CVC</li>
         </ul>
@@ -188,25 +251,44 @@ export default function BillingSettingsPage() {
                   <div className="text-xs font-medium text-center py-1.5 rounded-lg" style={{ background: "rgba(255,255,255,0.15)" }}>
                     Current
                   </div>
-                ) : isHigher ? (
+                ) : isHigher && tier !== "starter" ? (
                   <button
-                    onClick={() => alert("Upgrade coming soon — contact support@clubos.app")}
-                    className="w-full text-xs font-medium py-1.5 rounded-lg transition-colors"
+                    onClick={() => startUpgrade(tier)}
+                    disabled={upgradingTo === tier}
+                    className="w-full text-xs font-medium py-1.5 rounded-lg transition-colors disabled:opacity-50"
                     style={{ background: "var(--color-primary)", color: "#fff" }}
                   >
-                    Upgrade
+                    {upgradingTo === tier ? "Opening Stripe…" : "Upgrade"}
                   </button>
                 ) : (
                   <div className="text-xs text-center py-1.5 rounded-lg" style={{ color: "var(--color-muted)" }}>
-                    Downgrade
+                    {tier === "starter" ? "Downgrade via portal" : "Lower tier"}
                   </div>
                 )}
               </div>
             );
           })}
         </div>
-        <p className="text-xs text-text-muted mt-3">
-          To change your plan, email <a href="mailto:support@clubos.app" className="underline">support@clubos.app</a>. Full self-serve billing coming soon.
+        <div className="mt-4 flex flex-wrap gap-2">
+          {currentTier !== "starter" && (
+            <button
+              onClick={openManageBilling}
+              disabled={openingPortal}
+              className="text-sm px-4 py-2 border border-app-border rounded-lg text-text-primary hover:bg-app-bg disabled:opacity-50"
+            >
+              {openingPortal ? "Opening…" : "Manage billing"}
+            </button>
+          )}
+          <a
+            href="/dashboard/settings/diagnostics"
+            className="text-sm px-4 py-2 border border-app-border rounded-lg text-text-primary hover:bg-app-bg"
+          >
+            Stripe diagnostics →
+          </a>
+        </div>
+        <p className="text-[11px] text-text-muted mt-3">
+          Use Manage billing to update your card, view invoices, switch plans, or cancel.
+          Downgrading to Starter is handled through that portal.
         </p>
       </div>
     </div>

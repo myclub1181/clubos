@@ -124,6 +124,137 @@ export async function sendPasswordResetEmail({
   });
 }
 
+export async function sendStaffInviteEmail({
+  to,
+  firstName,
+  clubName,
+  inviterName,
+  loginUrl,
+  tempPassword,
+}: {
+  to: string;
+  firstName: string;
+  clubName: string;
+  inviterName: string;
+  loginUrl: string;
+  tempPassword?: string;
+}) {
+  await sendEmail({
+    to,
+    subject: `You've been added as staff at ${clubName}`,
+    html: baseLayout(`
+      <h2 style="color:#1c1917;margin:0 0 8px">Welcome to the team, ${firstName}!</h2>
+      <p style="color:#57534e;line-height:1.6;margin:0 0 12px">
+        ${inviterName} added you as staff at <strong>${clubName}</strong> on AthletixOS.
+        You can now sign in to manage members, classes, and more.
+      </p>
+      ${tempPassword ? `
+        <div style="background:#F5F3EE;border-radius:8px;padding:14px;margin:0 0 16px">
+          <p style="color:#57534e;margin:0 0 4px;font-size:13px">Your temporary password:</p>
+          <p style="font-family:monospace;font-size:15px;color:#1c1917;margin:0">${tempPassword}</p>
+          <p style="color:#a8a29e;font-size:12px;margin:8px 0 0">Change it after your first login from Settings.</p>
+        </div>
+      ` : ""}
+      <a href="${loginUrl}" style="display:inline-block;background:#534AB7;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;font-size:14px">
+        Sign in
+      </a>
+    `),
+  });
+}
+
+export async function sendBookingConfirmationEmail({
+  to,
+  firstName,
+  clubName,
+  eventName,
+  startsAt,
+  endsAt,
+  location,
+  coveredByMembership,
+  amountPaid,
+  portalUrl,
+}: {
+  to: string;
+  firstName: string;
+  clubName: string;
+  eventName: string;
+  startsAt: Date;
+  endsAt?: Date | null;
+  location?: string | null;
+  coveredByMembership?: boolean;
+  amountPaid?: string;
+  portalUrl: string;
+}) {
+  const fmtDate = startsAt.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+  const fmtTime = startsAt.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  const endTime = endsAt ? ` – ${endsAt.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}` : "";
+
+  await sendEmail({
+    to,
+    subject: `Booking confirmed: ${eventName}`,
+    html: baseLayout(`
+      <h2 style="color:#1c1917;margin:0 0 8px">You're confirmed, ${firstName}!</h2>
+      <p style="color:#57534e;line-height:1.6;margin:0 0 16px">
+        Your spot at <strong>${eventName}</strong> with ${clubName} is locked in.
+      </p>
+      <div style="background:#F5F3EE;border-radius:8px;padding:16px;margin:0 0 16px">
+        <p style="color:#1c1917;margin:0 0 4px;font-weight:600">${eventName}</p>
+        <p style="color:#57534e;margin:0;font-size:14px">${fmtDate}</p>
+        <p style="color:#57534e;margin:0;font-size:14px">${fmtTime}${endTime}</p>
+        ${location ? `<p style="color:#a8a29e;margin:6px 0 0;font-size:13px">${location}</p>` : ""}
+        ${coveredByMembership
+          ? `<p style="color:#65A30D;margin:8px 0 0;font-size:13px;font-weight:500">Covered by your membership</p>`
+          : amountPaid
+            ? `<p style="color:#57534e;margin:8px 0 0;font-size:13px">Paid: <strong>${amountPaid}</strong></p>`
+            : ""}
+      </div>
+      <a href="${portalUrl}" style="display:inline-block;background:#534AB7;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;font-size:14px">
+        View in your portal
+      </a>
+    `),
+  });
+}
+
+export async function sendMembershipActivatedEmail({
+  to,
+  firstName,
+  clubName,
+  membershipName,
+  amountPaid,
+  endDate,
+  portalUrl,
+}: {
+  to: string;
+  firstName: string;
+  clubName: string;
+  membershipName: string;
+  amountPaid?: string;
+  endDate?: Date | null;
+  portalUrl: string;
+}) {
+  await sendEmail({
+    to,
+    subject: `Welcome to ${membershipName} at ${clubName}`,
+    html: baseLayout(`
+      <h2 style="color:#1c1917;margin:0 0 8px">You're in, ${firstName}!</h2>
+      <p style="color:#57534e;line-height:1.6;margin:0 0 16px">
+        Your <strong>${membershipName}</strong> membership at ${clubName} is now active.
+      </p>
+      <div style="background:#F5F3EE;border-radius:8px;padding:16px;margin:0 0 16px">
+        <p style="color:#1c1917;margin:0 0 4px;font-weight:600">${membershipName}</p>
+        ${amountPaid ? `<p style="color:#57534e;margin:0;font-size:14px">Paid: <strong>${amountPaid}</strong></p>` : ""}
+        ${endDate ? `<p style="color:#57534e;margin:4px 0 0;font-size:14px">Renews ${endDate.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}</p>` : ""}
+      </div>
+      <a href="${portalUrl}" style="display:inline-block;background:#534AB7;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;font-size:14px">
+        Go to your portal
+      </a>
+      <p style="color:#a8a29e;font-size:13px;margin:20px 0 0">
+        You can manage your membership and payment method any time from the portal.
+      </p>
+    `),
+  });
+}
+
 export async function sendPaymentFailedEmail({
   to,
   firstName,

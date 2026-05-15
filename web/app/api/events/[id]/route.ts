@@ -12,6 +12,14 @@ const sessionSchema = z.object({
   sortOrder: z.number().int().default(0),
 });
 
+const formFieldSchema = z.object({
+  id: z.string(),
+  label: z.string().min(1),
+  type: z.enum(["text", "email", "phone", "textarea", "select", "checkbox"]),
+  required: z.boolean().default(false),
+  options: z.array(z.string()).optional(),
+});
+
 const updateSchema = z.object({
   type: z.enum(["CLASS", "PRIVATE", "CLINIC", "CAMP", "TOURNAMENT", "OTHER"]).optional(),
   customEventTypeId: z.string().optional().nullable(),
@@ -34,7 +42,22 @@ const updateSchema = z.object({
   pricingOptions: z.array(z.object({ type: z.literal("membership"), membershipId: z.string() })).optional(),
   staffUserIds: z.array(z.string()).optional(),
   sessions: z.array(sessionSchema).optional(),
+  tournamentMode: z.enum(["HOST", "ATTEND"]).optional().nullable(),
+  registrationForm: z.array(formFieldSchema).optional().nullable(),
+  publicRegistration: z.boolean().optional(),
+  publicFormIntro: z.string().optional().nullable(),
+  variableCostEnabled: z.boolean().optional(),
+  variableCostMode: z.enum(["ESTIMATED", "OFFICIAL"]).optional().nullable(),
+  variableCostTotal: z.number().min(0).optional().nullable(),
+  variableCostEstimatedSignups: z.number().int().positive().optional().nullable(),
 });
+
+function slugify(name: string): string {
+  return (
+    name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) ||
+    "event"
+  );
+}
 
 async function requireEvent(id: string, clubId: string) {
   return prisma.event.findFirst({
@@ -57,6 +80,7 @@ export async function GET(_: Request, { params }: { params: { id: string } }) {
         include: { member: { select: { id: true, firstName: true, lastName: true } } },
         orderBy: { createdAt: "asc" },
       },
+      registrations: { orderBy: { createdAt: "asc" } },
     },
   });
   if (!event) return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -83,11 +107,46 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
           : rest.type
         : rest.type;
 
+    const isTournament = (baseType ?? event.type) === "TOURNAMENT";
+
+    // Ensure a public slug exists once public registration is turned on (or it
+    // becomes a hosted tournament). Never change an existing slug — links shared
+    // with non-members must keep working.
+    const willBePublic =
+      rest.publicRegistration === true ||
+      (isTournament && (rest.tournamentMode ?? event.tournamentMode) === "HOST");
+    let publicSlug = event.publicSlug;
+    if (willBePublic && !publicSlug) {
+      const base = slugify(rest.name ?? event.name);
+      let candidate = base;
+      let n = 1;
+      while (n < 50) {
+        const clash = await prisma.event.findUnique({
+          where: { publicSlug: candidate },
+          select: { id: true },
+        });
+        if (!clash) break;
+        candidate = `${base}-${n++}`;
+      }
+      publicSlug = candidate;
+    }
+
+    const { registrationForm, variableCostEnabled, variableCostMode, variableCostTotal, variableCostEstimatedSignups, tournamentMode, ...flatRest } = rest;
+
     const updated = await prisma.event.update({
       where: { id: params.id },
       data: {
-        ...rest,
+        ...flatRest,
         ...(baseType ? { type: baseType } : {}),
+        ...(registrationForm !== undefined ? { registrationForm: registrationForm ?? undefined } : {}),
+        ...(tournamentMode !== undefined ? { tournamentMode: isTournament ? tournamentMode : null } : {}),
+        ...(variableCostEnabled !== undefined ? { variableCostEnabled } : {}),
+        ...(variableCostMode !== undefined ? { variableCostMode } : {}),
+        ...(variableCostTotal !== undefined ? { variableCostTotal } : {}),
+        ...(variableCostEstimatedSignups !== undefined ? { variableCostEstimatedSignups } : {}),
+        ...(isTournament ? {} : { isTournament: false }),
+        ...(isTournament ? { isTournament: true } : {}),
+        publicSlug,
         startsAt: rest.startsAt ? new Date(rest.startsAt) : undefined,
         endsAt: rest.endsAt ? new Date(rest.endsAt) : undefined,
         publishAt: rest.publishAt ? new Date(rest.publishAt) : rest.publishAt === null ? null : undefined,

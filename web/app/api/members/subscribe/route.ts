@@ -4,6 +4,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { stripe, calculatePlatformFee, billingPeriodToStripeInterval } from "@/lib/stripe";
+import { recomputeMemberStatus } from "@/lib/memberStatus";
 
 const schema = z.object({
   memberId:      z.string(),
@@ -110,6 +111,8 @@ export async function POST(req: Request) {
           discountCode: body.discountCode || null,
         },
       });
+      // Manual assignment is active immediately — flip member status to ACTIVE
+      await recomputeMemberStatus(memberId);
       return NextResponse.json({ memberSub, type: "manual" }, { status: 201 });
     }
 
@@ -160,13 +163,29 @@ export async function POST(req: Request) {
 
     const checkoutMode: "subscription" | "payment" = isRecurring ? "subscription" : "payment";
 
+    // Trial rules: if the membership has a trial and either the member has no
+    // prior active sub on this plan OR the plan allows returning trials, grant
+    // the configured trial period before the first charge.
+    let trialPeriodDays: number | null = null;
+    if (membership.trialEnabled && (membership.trialDays ?? 0) > 0 && isRecurring) {
+      const priorActive = await prisma.memberSubscription.findFirst({
+        where: { memberId, membershipId, status: { in: ["active", "past_due", "canceled", "expired"] } },
+        select: { id: true },
+      });
+      if (!priorActive || membership.trialAppliesToReturning) {
+        trialPeriodDays = membership.trialDays!;
+      }
+    }
+
     // Build subscription_data with optional billing anchor
-    const appFeePercent = club.tier === "starter" ? 2.5 : club.tier === "growth" ? 1.25 : 0;
+    const appFeePercent =
+      club.tier === "starter" ? 2.5 : 0; // Growth/Pro/Enterprise are all 0% now
     const subscriptionData: Record<string, unknown> = {
       application_fee_percent: appFeePercent,
       metadata: { memberSubscriptionId: memberSub.id, memberId, clubId: club.id },
       // auto-cancel at period end if auto-renew is off
       ...(isRecurring && !resolvedAutoRenew ? { cancel_at_period_end: true } : {}),
+      ...(trialPeriodDays ? { trial_period_days: trialPeriodDays } : {}),
     };
     if (billingAnchorDate) {
       subscriptionData.billing_cycle_anchor = Math.floor(billingAnchorDate.getTime() / 1000);

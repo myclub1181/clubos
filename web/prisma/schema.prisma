@@ -104,6 +104,8 @@ model Club {
   discounts                   Discount[]
   products                    Product[]
   productSales                ProductSale[]
+  uploadedFiles               UploadedFile[]
+  eventRegistrations          EventRegistration[]
   privateLessonTypes          PrivateLessonType[]
   privatePackages             PrivatePackage[]
   staffAvailability           StaffAvailability[]
@@ -170,6 +172,8 @@ model User {
   coachBookings           PrivateBooking[]             @relation("CoachBookings")
   privateLessonPayRates   PrivateLessonPayRate[]
   attendanceAdded         AttendanceRecord[]           @relation("AttendanceAddedBy")
+  documentSignatures      DocumentSignature[]
+  uploadedFiles           UploadedFile[]
 
   @@unique([clubId, email])
   @@index([clubId])
@@ -245,6 +249,8 @@ model Member {
   privateCredits    PrivateCreditLedger[]
   privateBookings   PrivateBooking[]
   attendanceRecords AttendanceRecord[]
+  documentSignatures DocumentSignature[]
+  eventRegistrations EventRegistration[]
 
   @@index([clubId])
   @@index([status])
@@ -364,6 +370,13 @@ model Membership {
   defaultBillingDay       Int? // 1-28; null = anchor to signup date
   contractMonths          Int? // minimum commitment; null = none
 
+  // Trial rules — when enabled, new subscribers get `trialDays` free before
+  // first charge. trialAppliesToReturning controls whether a member can use a
+  // trial again after a previous active subscription (default: one-time only).
+  trialEnabled            Boolean @default(false)
+  trialDays               Int?    // null when disabled; positive integer otherwise
+  trialAppliesToReturning Boolean @default(false)
+
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
   deletedAt DateTime?
@@ -437,6 +450,31 @@ model Event {
   registrationOpen       Boolean?
   divisions              String?
   pricingOptions         Json?
+
+  // Tournament mode — only meaningful when type=TOURNAMENT.
+  //   HOST   = the club is running the tournament; attach a registration form.
+  //   ATTEND = the club is taking a team to someone else's tournament; gather
+  //            signups and (optionally) split a shared cost across attendees.
+  tournamentMode         String?   // HOST | ATTEND
+
+  // Owner-editable registration form. Array of field defs:
+  //   [{ id, label, type: "text|email|phone|textarea|select|checkbox", required, options?: string[] }]
+  registrationForm       Json?
+
+  // Public (non-member) registration via /e/[publicSlug]
+  publicRegistration     Boolean   @default(false)
+  publicSlug             String?   @unique
+  publicFormIntro        String?
+
+  // Variable cost (ATTEND tournaments): split a shared cost across attendees.
+  //   ESTIMATED = charge total / estimatedSignups at signup time.
+  //   OFFICIAL  = collect free signups, then bill total / actualSignups after.
+  variableCostEnabled         Boolean   @default(false)
+  variableCostMode            String?   // ESTIMATED | OFFICIAL
+  variableCostTotal           Decimal?  @db.Decimal(10, 2)
+  variableCostEstimatedSignups Int?
+  variableCostBilledAt        DateTime?
+
   createdAt              DateTime  @default(now())
   updatedAt              DateTime  @updatedAt
   deletedAt              DateTime?
@@ -447,6 +485,7 @@ model Event {
   bookings         Booking[]
   sessions         EventSession[]
   staffAssignments EventStaffAssignment[]
+  registrations    EventRegistration[]
 
   @@index([clubId])
   @@index([startsAt])
@@ -465,6 +504,39 @@ model EventSession {
 
   @@index([eventId])
   @@map("event_sessions")
+}
+
+// A signup for an Event. Covers BOTH non-member public registrations (via the
+// /e/[slug] page) and member registrations. memberId is set only when an
+// existing member is matched. formResponses holds answers to the event's
+// owner-defined registrationForm.
+model EventRegistration {
+  id                      String   @id @default(cuid())
+  eventId                 String
+  clubId                  String
+  memberId                String?
+  name                    String
+  email                   String
+  phone                   String?
+  formResponses           Json     @default("{}")
+  status                  String   @default("REGISTERED") // REGISTERED | PAID | CANCELED
+  amountDue               Decimal? @db.Decimal(10, 2)
+  amountPaid              Decimal? @db.Decimal(10, 2)
+  // For OFFICIAL variable-cost billing: a Checkout link generated at bill time.
+  paymentUrl              String?
+  stripeCheckoutSessionId String?
+  stripePaymentIntentId   String?
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  event  Event   @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  club   Club    @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  member Member? @relation(fields: [memberId], references: [id], onDelete: SetNull)
+
+  @@index([eventId])
+  @@index([clubId])
+  @@index([memberId])
+  @@map("event_registrations")
 }
 
 model Booking {
@@ -555,15 +627,91 @@ model Document {
   unpublishAt               DateTime?
   expiresAt                 DateTime?
   requiresGuardianSignature Boolean   @default(false)
+  // How long a member's signature stays valid before they must re-sign.
+  // null = signature is valid indefinitely. Use 365 for annual, 730 for
+  // every two years, etc.
+  signatureValidForDays     Int?
   deliveryTrigger           String    @default("MANUAL") // MANUAL | MEMBERSHIP | EVENT | MESSAGE
   createdAt                 DateTime  @default(now())
   updatedAt                 DateTime  @updatedAt
   deletedAt                 DateTime?
 
-  club Club @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  club       Club                @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  signatures DocumentSignature[]
 
   @@index([clubId])
   @@map("documents")
+}
+
+// Audit log of every Stripe webhook event received. Drives the diagnostics
+// page and provides idempotency: if a Stripe event ID is seen twice we skip
+// re-processing. Stores the raw payload so failures can be replayed.
+model StripeWebhookEvent {
+  id            String   @id @default(cuid())
+  stripeEventId String   @unique
+  type          String
+  livemode      Boolean  @default(false)
+  // PLATFORM events arrive on the main account; CONNECT events arrive via
+  // Stripe Connect on behalf of a connected club account.
+  source        String   @default("PLATFORM") // PLATFORM | CONNECT
+  clubId        String?
+  processed     Boolean  @default(false)
+  errorMessage  String?
+  payload       Json
+  createdAt     DateTime @default(now())
+  processedAt   DateTime?
+
+  @@index([type])
+  @@index([clubId])
+  @@index([createdAt])
+  @@map("stripe_webhook_events")
+}
+
+// File metadata for uploads. The file bytes live on disk under
+// process.env.UPLOADS_DIR (default ./storage/uploads), keyed by storageKey.
+// Files are served only via /api/files/[id] which scopes by clubId, so URLs
+// are not world-readable like /public/uploads used to be.
+model UploadedFile {
+  id            String   @id @default(cuid())
+  clubId        String
+  uploaderId    String?
+  storageKey    String   @unique // disk filename, not the public URL
+  originalName  String
+  mimeType      String
+  sizeBytes     Int
+  kind          String   @default("IMAGE") // IMAGE | DOCUMENT | OTHER
+  createdAt     DateTime @default(now())
+
+  club     Club @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  uploader User? @relation(fields: [uploaderId], references: [id], onDelete: SetNull)
+
+  @@index([clubId])
+  @@map("uploaded_files")
+}
+
+// Audit trail for member/guardian acknowledgement of a document.
+// memberId  = which member the signature applies to (the athlete, possibly a minor).
+// signerUserId = which logged-in User clicked "I have read and acknowledge".
+// relationship = "SELF" when the member signed for themselves; "GUARDIAN" when a parent/guardian signed for a minor.
+model DocumentSignature {
+  id            String   @id @default(cuid())
+  documentId    String
+  memberId      String
+  signerUserId  String
+  signerName    String
+  relationship  String   @default("SELF") // SELF | GUARDIAN
+  signedAt      DateTime @default(now())
+  ipAddress     String?
+  userAgent     String?
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  member   Member   @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  signer   User     @relation(fields: [signerUserId], references: [id], onDelete: Cascade)
+
+  @@unique([documentId, memberId])
+  @@index([memberId])
+  @@index([documentId])
+  @@map("document_signatures")
 }
 
 model Expense {
@@ -983,8 +1131,11 @@ model RecurringClass {
   name                String
   description         String?
   daysOfWeek          Json      @default("[]") // [0,1,...,6] — 0=Sun, 1=Mon, ..., 6=Sat
-  startTime           String // "09:00" HH:mm
-  endTime             String // "17:00" HH:mm
+  startTime           String // "09:00" HH:mm — default time, used when a day has no override
+  endTime             String // "17:00" HH:mm — default time, used when a day has no override
+  // Optional per-day time overrides. Shape: [{ dayOfWeek: 0..6, startTime, endTime }]
+  // Days listed here use these times; days NOT listed fall back to startTime/endTime above.
+  dayOverrides        Json      @default("[]")
   capacity            Int?
   recurrenceStartDate DateTime
   recurrenceEndDate   DateTime? // null = ongoing; generate 1 yr ahead

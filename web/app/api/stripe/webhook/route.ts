@@ -3,7 +3,40 @@ import { headers } from "next/headers";
 import { stripe } from "@/lib/stripe";
 import { prisma } from "@/lib/prisma";
 import { recomputeMemberStatus } from "@/lib/memberStatus";
+import {
+  sendBookingConfirmationEmail,
+  sendMembershipActivatedEmail,
+  sendPaymentFailedEmail,
+} from "@/lib/email";
 import type Stripe from "stripe";
+
+const BASE_URL = process.env.NEXTAUTH_URL || "http://localhost:3001";
+
+// Resolve the best email + first name for a member. Falls back to guardian email
+// for minors, then to the linked User account.
+async function memberContact(memberId: string): Promise<{ email: string | null; firstName: string; clubName: string }> {
+  const m = await prisma.member.findUnique({
+    where: { id: memberId },
+    select: {
+      firstName: true,
+      email: true,
+      isMinor: true,
+      guardianEmail: true,
+      guardian: { select: { email: true } },
+      user: { select: { email: true } },
+      club: { select: { name: true } },
+    },
+  });
+  if (!m) return { email: null, firstName: "", clubName: "" };
+  const email = m.isMinor
+    ? (m.guardian?.email || m.guardianEmail || m.email || m.user?.email || null)
+    : (m.email || m.user?.email || m.guardianEmail || null);
+  return { email, firstName: m.firstName, clubName: m.club?.name ?? "your club" };
+}
+
+function safeAsync(fn: () => Promise<unknown>) {
+  fn().catch((err) => console.error("Email send failed:", err));
+}
 
 export async function POST(req: Request) {
   const body = await req.text();
@@ -21,6 +54,33 @@ export async function POST(req: Request) {
     console.error("Webhook signature verification failed:", err);
     return NextResponse.json({ error: "Invalid signature" }, { status: 400 });
   }
+
+  // event.account is the connected-account id for Connect events; absent for
+  // PLATFORM-level events (ClubOS-own subscription, account.updated for connect
+  // onboarding still comes through on platform).
+  const source = event.account ? "CONNECT" : "PLATFORM";
+
+  // Idempotency: bail early if we've already processed this event id.
+  const existing = await prisma.stripeWebhookEvent.findUnique({
+    where: { stripeEventId: event.id },
+    select: { id: true, processed: true },
+  });
+  if (existing?.processed) {
+    return NextResponse.json({ received: true, deduped: true });
+  }
+
+  const logRow = existing
+    ? null
+    : await prisma.stripeWebhookEvent.create({
+        data: {
+          stripeEventId: event.id,
+          type: event.type,
+          livemode: event.livemode,
+          source,
+          payload: event as unknown as object,
+        },
+      });
+  const logId = existing?.id ?? logRow!.id;
 
   try {
     switch (event.type) {
@@ -49,6 +109,29 @@ export async function POST(req: Request) {
         const classId   = session.metadata?.classId;
         const classSessionId = session.metadata?.classSessionId;
         const saleId    = session.metadata?.saleId; // product sale
+        const eventRegistrationId = session.metadata?.eventRegistrationId; // public/non-member event signup
+        const clubOsPlan = session.metadata?.clubOsPlan; // ClubOS-own subscription tier
+
+        // ── ClubOS platform subscription checkout ────────────────────────────
+        // Club owner upgraded their AthletixOS plan. Persist tier + Stripe ids
+        // so future invoices/cancellations sync correctly.
+        if (clubOsPlan && session.metadata?.platformClubId && session.mode === "subscription") {
+          const platformClubId = session.metadata.platformClubId;
+          await prisma.club.update({
+            where: { id: platformClubId },
+            data: {
+              tier: clubOsPlan,
+              stripeCustomerId: (session.customer as string) || undefined,
+              stripeSubscriptionId: (session.subscription as string) || undefined,
+              subscriptionStatus: "active",
+            },
+          });
+          await prisma.stripeWebhookEvent.update({
+            where: { id: logId },
+            data: { clubId: platformClubId },
+          });
+          break;
+        }
 
         // ── Membership checkout ──────────────────────────────────────────────
         if (memberSubscriptionId) {
@@ -110,6 +193,29 @@ export async function POST(req: Request) {
 
             // Now that this member has an active subscription, promote them to ACTIVE.
             await recomputeMemberStatus(memberSub.memberId);
+
+            // Email: membership activated
+            const contact = await memberContact(memberSub.memberId);
+            if (contact.email) {
+              const updated = await prisma.memberSubscription.findUnique({
+                where: { id: memberSubscriptionId },
+                include: { membership: { select: { name: true } } },
+              });
+              const amountStr = session.amount_total
+                ? `$${(session.amount_total / 100).toFixed(2)}`
+                : undefined;
+              safeAsync(() =>
+                sendMembershipActivatedEmail({
+                  to: contact.email!,
+                  firstName: contact.firstName,
+                  clubName: contact.clubName,
+                  membershipName: updated?.membership.name ?? memberSub.optionLabel,
+                  amountPaid: amountStr,
+                  endDate: updated?.endDate ?? null,
+                  portalUrl: `${BASE_URL}/member`,
+                })
+              );
+            }
           }
         }
 
@@ -143,12 +249,59 @@ export async function POST(req: Request) {
               await prisma.booking.create({
                 data: { eventId, memberId, status },
               });
+
+              // Email: booking confirmation (skip waitlisted; that's a different message)
+              if (status === "CONFIRMED") {
+                const contact = await memberContact(memberId);
+                if (contact.email) {
+                  const amountStr = session.amount_total
+                    ? `$${(session.amount_total / 100).toFixed(2)}`
+                    : undefined;
+                  safeAsync(() =>
+                    sendBookingConfirmationEmail({
+                      to: contact.email!,
+                      firstName: contact.firstName,
+                      clubName: contact.clubName,
+                      eventName: event.name,
+                      startsAt: event.startsAt,
+                      endsAt: event.endsAt,
+                      amountPaid: amountStr,
+                      portalUrl: `${BASE_URL}/member/bookings`,
+                    })
+                  );
+                }
+              }
             }
           }
         }
 
         // ── Class session checkout ───────────────────────────────────────────
         if (memberId && classId && classSessionId) {
+          // Send class booking confirmation
+          const classRow = await prisma.recurringClass.findFirst({
+            where: { id: classId, clubId, deletedAt: null },
+          });
+          const sessionRow = await prisma.classSession.findUnique({ where: { id: classSessionId } });
+          if (classRow && sessionRow) {
+            const contact = await memberContact(memberId);
+            if (contact.email) {
+              const amountStr = session.amount_total
+                ? `$${(session.amount_total / 100).toFixed(2)}`
+                : undefined;
+              safeAsync(() =>
+                sendBookingConfirmationEmail({
+                  to: contact.email!,
+                  firstName: contact.firstName,
+                  clubName: contact.clubName,
+                  eventName: classRow.name,
+                  startsAt: sessionRow.startsAt,
+                  endsAt: sessionRow.endsAt,
+                  amountPaid: amountStr,
+                  portalUrl: `${BASE_URL}/member/bookings`,
+                })
+              );
+            }
+          }
           await prisma.transaction.create({
             data: {
               clubId,
@@ -202,6 +355,48 @@ export async function POST(req: Request) {
           }
         }
 
+        // ── Public / non-member event registration checkout ──────────────────
+        if (eventRegistrationId) {
+          const reg = await prisma.eventRegistration.findUnique({
+            where: { id: eventRegistrationId },
+            include: { event: { select: { name: true } } },
+          });
+          if (reg && reg.status !== "PAID") {
+            const amount = (session.amount_total || 0) / 100;
+            await prisma.eventRegistration.update({
+              where: { id: reg.id },
+              data: {
+                status: "PAID",
+                amountPaid: amount,
+                stripePaymentIntentId: session.payment_intent as string | undefined,
+              },
+            });
+            await prisma.transaction.create({
+              data: {
+                clubId: reg.clubId,
+                memberId: reg.memberId,
+                amount,
+                status: "SUCCEEDED",
+                stripePaymentIntentId: session.payment_intent as string | undefined,
+                description: `Event registration: ${reg.event.name}`,
+                type: "EVENT",
+              },
+            });
+            // If they matched an existing member, also create a Booking so it
+            // shows on their portal alongside member bookings.
+            if (reg.memberId) {
+              const existing = await prisma.booking.findUnique({
+                where: { eventId_memberId: { eventId: reg.eventId, memberId: reg.memberId } },
+              });
+              if (!existing) {
+                await prisma.booking.create({
+                  data: { eventId: reg.eventId, memberId: reg.memberId, status: "CONFIRMED" },
+                });
+              }
+            }
+          }
+        }
+
         break;
       }
 
@@ -251,7 +446,24 @@ export async function POST(req: Request) {
             where: { stripeSubscriptionId: subscriptionId },
             data: { status: "past_due" },
           });
-          for (const s of subs) await recomputeMemberStatus(s.memberId);
+          for (const s of subs) {
+            await recomputeMemberStatus(s.memberId);
+            const contact = await memberContact(s.memberId);
+            if (contact.email) {
+              const amountStr = invoice.amount_due
+                ? `$${(invoice.amount_due / 100).toFixed(2)}`
+                : "your membership fee";
+              safeAsync(() =>
+                sendPaymentFailedEmail({
+                  to: contact.email!,
+                  firstName: contact.firstName,
+                  clubName: contact.clubName,
+                  amount: amountStr,
+                  loginUrl: `${BASE_URL}/member/profile`,
+                })
+              );
+            }
+          }
         }
         break;
       }
@@ -259,15 +471,48 @@ export async function POST(req: Request) {
       // ── Subscription canceled (auto-renew off or explicit cancel) ──────────
       case "customer.subscription.deleted": {
         const subscription = event.data.object as Stripe.Subscription;
+
+        // Member-sub side (member paying their club)
         const subs = await prisma.memberSubscription.findMany({
           where: { stripeSubscriptionId: subscription.id },
           select: { id: true, memberId: true },
         });
-        await prisma.memberSubscription.updateMany({
+        if (subs.length > 0) {
+          await prisma.memberSubscription.updateMany({
+            where: { stripeSubscriptionId: subscription.id },
+            data: { status: "canceled", canceledAt: new Date() },
+          });
+          for (const s of subs) await recomputeMemberStatus(s.memberId);
+        } else {
+          // ClubOS platform sub (club paying ClubOS) — downgrade to Starter
+          await prisma.club.updateMany({
+            where: { stripeSubscriptionId: subscription.id },
+            data: { tier: "starter", subscriptionStatus: "canceled" },
+          });
+        }
+        break;
+      }
+
+      // ── ClubOS platform subscription status changes ────────────────────────
+      case "customer.subscription.updated": {
+        const subscription = event.data.object as Stripe.Subscription;
+        // Skip when this is a member-sub on a connected account
+        if (source === "CONNECT") break;
+        await prisma.club.updateMany({
           where: { stripeSubscriptionId: subscription.id },
-          data: { status: "canceled", canceledAt: new Date() },
+          data: { subscriptionStatus: subscription.status },
         });
-        for (const s of subs) await recomputeMemberStatus(s.memberId);
+        // If a tier change happened via price swap, sync via Price ID
+        const newPriceId = subscription.items.data[0]?.price.id;
+        if (newPriceId) {
+          const tierForPrice = tierFromPriceId(newPriceId);
+          if (tierForPrice) {
+            await prisma.club.updateMany({
+              where: { stripeSubscriptionId: subscription.id },
+              data: { tier: tierForPrice },
+            });
+          }
+        }
         break;
       }
 
@@ -275,11 +520,37 @@ export async function POST(req: Request) {
         break;
     }
 
+    if (logId) {
+      await prisma.stripeWebhookEvent.update({
+        where: { id: logId },
+        data: { processed: true, processedAt: new Date() },
+      });
+    }
+
     return NextResponse.json({ received: true });
   } catch (err) {
     console.error("Webhook handler error:", err);
-    return NextResponse.json({ error: String(err) }, { status: 500 });
+    if (logId) {
+      await prisma.stripeWebhookEvent.update({
+        where: { id: logId },
+        data: { errorMessage: String(err), processedAt: new Date() },
+      }).catch(() => {});
+    }
+    // Return 200 anyway so Stripe doesn't retry-storm us on a persistent bug.
+    // The event is saved with the error message for replay/debugging.
+    return NextResponse.json({ received: true, error: String(err) }, { status: 200 });
   }
+}
+
+// Map a Stripe Price ID back to our internal tier name. Env vars are set per
+// environment (test vs live) and define which Price corresponds to which tier.
+function tierFromPriceId(priceId: string): string | null {
+  const map: Record<string, string> = {
+    [process.env.STRIPE_PRICE_GROWTH || "__growth__"]: "growth",
+    [process.env.STRIPE_PRICE_PRO || "__pro__"]: "pro",
+    [process.env.STRIPE_PRICE_ENTERPRISE || "__enterprise__"]: "enterprise",
+  };
+  return map[priceId] ?? null;
 }
 
 /** Compute endDate from a startDate + billingPeriod string */

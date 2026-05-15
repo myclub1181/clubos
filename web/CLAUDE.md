@@ -1,6 +1,6 @@
 # AthletixOS Project Context
 
-Last updated: 2026-05-03
+Last updated: 2026-05-15
 
 This file is the working context for the AthletixOS web app. Treat it as current-state documentation, not a product promise. Do not claim an area is complete unless it is visible in the app and verified.
 
@@ -8,9 +8,10 @@ This file is the working context for the AthletixOS web app. Treat it as current
 
 AthletixOS is a multi-tenant SaaS app for sports clubs and gyms. It has:
 
-- Club owner/staff dashboard for members, classes, events, purchase options, staff, documents, messages, attendance, financials, and settings.
-- Member portal for members/guardians to view bookings, documents, profile, and portal content.
+- Club owner/staff dashboard for members, classes, events, purchase options, staff, documents, messages, attendance, financials, reports, and settings.
+- Member portal for members/guardians to view bookings, documents, profile, and portal content. Guardian/minor flows with child-switching and audited document signatures.
 - PostgreSQL database scoped by `clubId`.
+- Two-sided Stripe integration: Stripe Connect for member → club payments, plus a separate platform-account subscription for clubs paying AthletixOS.
 
 ## Current Tech Stack
 
@@ -20,9 +21,10 @@ AthletixOS is a multi-tenant SaaS app for sports clubs and gyms. It has:
 - Auth: NextAuth v4 credentials provider with JWT sessions.
 - Database: PostgreSQL via Prisma ORM.
 - Prisma versions: `prisma` and `@prisma/client` pinned to 5.7.0.
-- Payments: Stripe Connect and Checkout routes are present.
-- Bank integration: Plaid routes and settings are present, but needs end-to-end validation.
-- Email: Nodemailer helper exists.
+- Payments: Stripe Connect (member → club) and Stripe platform subscription (club → AthletixOS).
+- Bank integration: Plaid routes and settings present.
+- Email: Nodemailer helper with transactional templates wired into key flows.
+- File storage: private on-disk store under `process.env.UPLOADS_DIR` (default `./storage/uploads`), served only through `/api/files/[id]` with club scoping.
 - Local dev port: `npm run dev` runs Next on `localhost:3001`.
 - Local auth URL: `.env` should use `NEXTAUTH_URL=http://localhost:3001`.
 
@@ -65,6 +67,21 @@ Use the Tailwind v4 theme tokens from `app/globals.css`:
 - `text-text-primary`, `text-text-muted`
 
 Avoid reintroducing random Tailwind color families such as `blue-*`, `green-*`, `amber-*`, `purple-*`, `stone-*`, or hardcoded old AthletixOS colors.
+
+## Tier Model
+
+Four tiers stored on `Club.tier`. Definitions live in `lib/tier.ts` and `lib/stripe.ts`.
+
+| Tier       | Monthly | Setup | Tx fee | Members   | Locations  | Notable extras                                                |
+|------------|---------|-------|--------|-----------|------------|---------------------------------------------------------------|
+| Starter    | $0      | $0    | 2.5%   | 150       | 1          | Classes, events, attendance, direct messaging                  |
+| Growth     | $50     | $0    | 0%     | Unlimited | **1 only** | Reports, Plaid, discounts, document signatures                 |
+| Pro        | $99     | $50   | 0%     | Unlimited | 5          | Everything + email/SMS, branded mobile, multi-location, priority|
+| Enterprise | $199    | $50   | 0%     | Unlimited | Unlimited  | Multi-location analytics, API, dedicated support               |
+
+**Growth is single-location on purpose** — the differentiator is "skip transaction fees on a tight budget"; multi-location requires Pro.
+
+Enforcement is wired today in: `/api/members` (maxMembers), `/api/club/locations` (maxLocations), `/api/reports/overview` (reports flag), `/api/plaid/*` (plaid flag), `/api/announcements` (emailSms for broadcast).
 
 ## Dashboard Navigation
 
@@ -117,43 +134,37 @@ Dashboard pages:
 - `/dashboard`
 - `/dashboard/members`
 - `/dashboard/staff`
-- `/dashboard/staff/schedule`
-- `/dashboard/staff/availability`
-- `/dashboard/staff/payroll`
-- `/dashboard/purchase-options`
-- `/dashboard/purchase-options/memberships`
-- `/dashboard/purchase-options/privates`
-- `/dashboard/purchase-options/products`
-- `/dashboard/memberships`
-- `/dashboard/privates`
-- `/dashboard/products`
+- `/dashboard/staff/schedule` — weekly grid of availability + class/event assignments per staff
+- `/dashboard/staff/availability` — per-staff weekly slots + date exceptions
+- `/dashboard/staff/payroll` — date-ranged payroll table with CSV export
+- `/dashboard/purchase-options`, `.../memberships`, `.../privates`, `.../products`
+- `/dashboard/memberships`, `/dashboard/privates`, `/dashboard/products`
 - `/dashboard/classes`
 - `/dashboard/events`
-- `/dashboard/calendar`
+- `/dashboard/calendar` — unified Events + Classes + Private Lessons monthly grid with kind + subtype filters
 - `/dashboard/messages`
 - `/dashboard/announcements`
 - `/dashboard/attendance`
 - `/dashboard/financials`
-- `/dashboard/reports`
+- `/dashboard/reports` — KPI cards, revenue chart, breakdowns, top events, CSV exports (gated by tier)
 - `/dashboard/documents`
 - `/dashboard/custom-fields`
 - `/dashboard/settings`
-- `/dashboard/settings/billing`
+- `/dashboard/settings/billing` — Stripe Connect + ClubOS subscription upgrade/portal + Diagnostics link
 - `/dashboard/settings/club`
 - `/dashboard/settings/member-form`
-- `/dashboard/schedule`
+- `/dashboard/settings/diagnostics` — Stripe diagnostics: setup checklist, env vars, webhook event log
+- `/dashboard/schedule` (legacy; kept for back-compat)
 
 Member portal pages:
 
 - `/member`
-- `/member/bookings`
-- `/member/documents`
+- `/member/bookings` — child-switcher for parents; shows bookings per accessible member
+- `/member/documents` — child-switcher + sign / re-sign with audit trail and frequency-based expiry
 - `/member/profile`
 - `/member/signup`
 - `/member/announcements`
-- `/member/messages`
-- `/member/messages/dm/[userId]`
-- `/member/messages/group/[id]`
+- `/member/messages`, `.../dm/[userId]`, `.../group/[id]`
 - `/member/memberships`
 - `/member/events`
 - `/member/products`
@@ -173,17 +184,16 @@ Auth:
 Club/settings:
 
 - `/api/club/update` — also writes `aboutUs`
-- `/api/club/info` — returns `aboutUs` for the dashboard settings page
+- `/api/club/info` — returns logo, tier, subscriptionStatus, stripeSubscriptionId, etc.
 - `/api/club/profile`
-- `/api/club/tier`
+- `/api/club/tier` — promo-code path only; paid tier upgrades go through `/api/club/subscription/checkout` (returns 400 if a paid tier is set without promo)
 - `/api/club/notifications`
-- `/api/club/locations`
-- `/api/club/locations/[id]`
-- `/api/club/legal-entities`
-- `/api/club/legal-entities/[id]`
-- `/api/club/donation-links`
-- `/api/club/donation-links/[id]`
-- `/api/club/member-form` — GET/PUT for the member intake form config (drives Add Member modal + CSV import requirements)
+- `/api/club/locations`, `/api/club/locations/[id]` — `maxLocations` enforced from tier
+- `/api/club/legal-entities`, `/api/club/legal-entities/[id]`
+- `/api/club/donation-links`, `/api/club/donation-links/[id]`
+- `/api/club/member-form` — GET/PUT for member intake form config
+- `/api/club/subscription/checkout` — start Stripe Checkout for the ClubOS-own subscription (platform Stripe account, not Connect)
+- `/api/club/subscription/portal` — open Stripe Billing Portal for the club owner
 
 Core dashboard:
 
@@ -191,93 +201,88 @@ Core dashboard:
 - `/api/members/[id]`
 - `/api/members/[id]/credits`
 - `/api/members/import`
-- `/api/members/subscribe`
-- `/api/memberships`
-- `/api/memberships/[id]`
-- `/api/custom-fields`
-- `/api/custom-fields/[id]`
-- `/api/classes`
-- `/api/classes/[id]`
+- `/api/members/subscribe` — manual MANUAL path now calls `recomputeMemberStatus` so members flip ACTIVE immediately on assignment; honors `Membership.trialEnabled/trialDays/trialAppliesToReturning`
+- `/api/members/subscriptions/[subId]` (DELETE) — owner cancel: cancels on Stripe (if attached) + locally + recomputes member status
+- `/api/memberships`, `/api/memberships/[id]` — schema accepts trial fields
+- `/api/custom-fields`, `/api/custom-fields/[id]`
+- `/api/classes`, `/api/classes/[id]` — supports `dayOverrides`; PATCH regenerates future non-canceled sessions when scheduling changes, preserving sessions with attendance
 - `/api/classes/[id]/sessions`
-- `/api/classes/[id]/charge` — paid drop-in / membership-covered class registration
-- `/api/events`
-- `/api/events/[id]`
+- `/api/classes/[id]/charge` — emits booking confirmation email on free membership-covered path
+- `/api/events`, `/api/events/[id]`
 - `/api/events/[id]/bookings`
-- `/api/events/[id]/charge`
+- `/api/events/[id]/charge` — emits booking confirmation email on free membership-covered path
 - `/api/events/[id]/staff`
-- `/api/events/types`
-- `/api/events/types/[id]`
+- `/api/events/types`, `/api/events/types/[id]`
 - `/api/attendance`
 - `/api/attendance/[sessionId]` — also returns the parent class's `pricingOptions` and resolved `acceptedMemberships`
+- `/api/calendar` — unified feed of events + class sessions + confirmed private lessons (used by `/dashboard/calendar`)
+
+Reports:
+
+- `/api/reports/overview?range=…` — tier-gated; returns revenue / member counts / subscription counts / attendance / top events / 12-month revenue series
 
 Messaging/documents:
 
-- `/api/messages`
-- `/api/messages/[id]`
-- `/api/messages/dm`
-- `/api/messages/dm/[userId]`
-- `/api/messages/groups`
-- `/api/messages/groups/[id]`
-- `/api/announcements`
-- `/api/announcements/[id]`
-- `/api/documents`
-- `/api/documents/[id]`
+- `/api/messages`, `/api/messages/[id]`
+- `/api/messages/dm`, `/api/messages/dm/[userId]`
+- `/api/messages/groups`, `/api/messages/groups/[id]`
+- `/api/announcements`, `/api/announcements/[id]` — broadcast emails gated on `emailSms` tier flag
+- `/api/documents`, `/api/documents/[id]` — schema accepts `signatureValidForDays`
+- `/api/documents/[id]/signatures` — owner audit trail listing every signature on a document
+
+Files:
+
+- `/api/upload` — writes to `process.env.UPLOADS_DIR` (default `./storage/uploads`, gitignored, outside `public/`) with random storage key; returns `/api/files/[id]` URL
+- `/api/files/[id]` — authenticated file serving; verifies `session.user.clubId === file.clubId`
 
 Financial/payment/product:
 
 - `/api/transactions`
-- `/api/expenses`
-- `/api/expenses/[id]`
-- `/api/discounts`
-- `/api/discounts/[id]`
-- `/api/products`
-- `/api/products/[id]`
+- `/api/expenses`, `/api/expenses/[id]`
+- `/api/discounts`, `/api/discounts/[id]`
+- `/api/products`, `/api/products/[id]`
 - `/api/products/[id]/sell`
 - `/api/stripe/connect`
 - `/api/stripe/status`
 - `/api/stripe/dashboard`
-- `/api/stripe/webhook`
-- `/api/plaid/link-token`
-- `/api/plaid/exchange`
-- `/api/plaid/transactions`
+- `/api/stripe/webhook` — idempotent (skips known event IDs), logs every event to `StripeWebhookEvent`, handles Connect events (member sub activate / renewal / payment_failed) AND platform events (ClubOS-own subscription activate / update / cancel)
+- `/api/stripe/diagnostics` — owner-only; returns Connect + platform status, env checklist, event counts, last 50 events
+- `/api/plaid/link-token`, `/api/plaid/exchange`, `/api/plaid/transactions` — gated on `plaid` tier flag
 
-Private lessons/staff/export/upload:
+Private lessons/staff/export:
 
-- `/api/private-lessons/types`
-- `/api/private-lessons/types/[id]`
-- `/api/private-lessons/packages`
-- `/api/private-lessons/packages/[id]`
-- `/api/private-lessons/bookings`
-- `/api/private-lessons/bookings/[id]`
-- `/api/staff`
-- `/api/staff/[id]`
-- `/api/staff/[id]/availability`
-- `/api/staff/[id]/availability/exceptions`
+- `/api/private-lessons/types`, `.../types/[id]`
+- `/api/private-lessons/packages`, `.../packages/[id]`
+- `/api/private-lessons/bookings`, `.../bookings/[id]`
+- `/api/staff`, `/api/staff/[id]`
+- `/api/staff/[id]/availability`, `/api/staff/[id]/availability/exceptions`
 - `/api/staff/[id]/pay-rates`
-- `/api/export/members`
-- `/api/export/attendance`
-- `/api/export/transactions`
-- `/api/upload`
+- `/api/staff/schedule?from=&to=` — weekly schedule aggregator (availability + classes + events)
+- `/api/staff/payroll?from=&to=` — computes scheduled hours, class teaching hours (from `RecurringClass.assignedStaffIds`), hourly pay, salary, private lesson pay
+- `/api/export/members`, `/api/export/attendance`, `/api/export/transactions`
+
+Member-side:
+
 - `/api/member/signup`
 - `/api/member/portal`
 - `/api/member/portal/link-child`
-- `/api/member/club` — public-facing club info for the member portal (logo, tagline, aboutUs)
-- `/api/member/staff` — visible staff (only `showOnPortal=true`) with bios + public contact
+- `/api/member/me` — GET/PATCH/DELETE own profile
+- `/api/member/club` — public club info for portal (logo, tagline, aboutUs)
+- `/api/member/staff` — visible staff (only `showOnPortal=true`)
 - `/api/member/announcements`
-- `/api/member/documents`
-- `/api/member/messages`
-- `/api/member/messages/dm/[userId]`
-- `/api/member/messages/groups/[id]`
+- `/api/member/documents?memberId=…` — context-aware; returns docs + signature status for a given accessible member (self or linked child); signature includes `expiresAt`/`expired` based on `signatureValidForDays`
+- `/api/member/documents/[id]/sign` — POST persists a `DocumentSignature` with relationship (SELF | GUARDIAN), IP, user agent; enforces that minors can't self-sign guardian-required docs
+- `/api/member/messages`, `.../dm/[userId]`, `.../groups/[id]`
 - `/api/member/memberships`
-- `/api/member/memberships/subscribe`
+- `/api/member/memberships/subscribe` — honors trial rules
+- `/api/member/billing-portal`
 - `/api/member/events`
-- `/api/member/events/[id]/register`
-- `/api/member/products`
-- `/api/member/products/[id]/buy`
+- `/api/member/events/[id]/register` — emits booking confirmation email on free paths
+- `/api/member/products`, `.../products/[id]/buy`
 
 ## Current Prisma Schema Status
 
-`prisma/schema.prisma` validates as of 2026-05-03.
+`prisma/schema.prisma` validates as of 2026-05-15.
 
 Core models currently present:
 
@@ -286,140 +291,171 @@ Core models currently present:
 - Purchase options: `Membership`, `MemberSubscription`, `Discount`, `Product`, `ProductSale`
 - Classes/events: `RecurringClass`, `ClassSession`, `Event`, `EventSession`, `Booking`, `ClubEventType`, `AttendanceRecord`, `EventStaffAssignment`
 - Messaging/announcements: `Message`, `MessageGroup`, `MessageGroupMember`, `GroupMessage`, `Announcement`
-- Documents/settings: `Document`, `CustomField`, `ClubProfile`, `LegalEntity`, `DonationLink`
+- Documents/settings: `Document`, `DocumentSignature`, `CustomField`, `ClubProfile`, `LegalEntity`, `DonationLink`
 - Financials: `Transaction`, `Expense`
 - Private lessons/staff: `PrivateLessonType`, `PrivatePackage`, `PrivateCreditLedger`, `PrivateBooking`, `PrivateLessonPayRate`, `StaffAvailability`, `StaffAvailabilityException`
+- Infra: `UploadedFile`, `StripeWebhookEvent`
+
+Notable model fields added since 2026-05-03:
+
+- `Document.signatureValidForDays Int?` — null = sign-once, otherwise days until re-signature required
+- `Membership.trialEnabled Boolean`, `trialDays Int?`, `trialAppliesToReturning Boolean`
+- `RecurringClass.dayOverrides Json` — `[{ dayOfWeek, startTime, endTime }, …]` — overrides default start/end times on specific days
+- `Club.subscriptionStatus String?`, `stripeSubscriptionId String? @unique` (used for platform-side billing)
 
 Migration folders currently present:
 
 - `20260425040936_init`
 - `20260426212544_stripe_fields`
 - `20260429174803_guardian_profile`
-- `20260429192044_add_missing_core_tables`
+- `20260429192044_add_missing_core_tables` — broad migration; drops `events.price`
 - `20260429203000_add_class_assigned_staff` — adds `recurring_classes.assignedStaffIds` (JSONB, default `[]`)
-- `20260503031252_add_member_form_about_staff_bios` — adds `clubs.memberFormConfig` (JSONB, nullable), `clubs.aboutUs` (text, nullable), and `staff_profiles.bio` / `publicEmail` / `publicPhone` / `photoUrl` / `showOnPortal` (default false).
+- `20260503031252_add_member_form_about_staff_bios` — adds `clubs.memberFormConfig` (JSONB, nullable), `clubs.aboutUs` (text, nullable), and `staff_profiles.bio`/`publicEmail`/`publicPhone`/`photoUrl`/`showOnPortal`
+- `20260503103157_add_club_public_profile` — adds `clubs.contactEmail`, `contactPhone`, `coverImageUrl`, `hoursOfOperation`, `socialLinks`, `websiteUrl`
+- `20260514000000_add_document_signatures` — `document_signatures` table
+- `20260514100000_uploaded_files_and_sig_frequency` — `uploaded_files` table + `documents.signatureValidForDays`
+- `20260514110000_stripe_webhook_events` — `stripe_webhook_events` table
+- `20260515000000_class_overrides_membership_trial` — `recurring_classes.dayOverrides`, `memberships.trialEnabled/trialDays/trialAppliesToReturning`
 
 Current migration status:
 
-- `npx prisma migrate status` reports the database schema is up to date with 6 migrations.
+- `npx prisma migrate status` reports the database schema is up to date with 11 migrations.
 - `npx prisma validate` passes.
-- The `add_class_assigned_staff` migration was sitting unapplied and silently broke `POST/PATCH /api/classes` (Postgres rejected writes referencing the missing column). Applied via `npx prisma migrate deploy` on 2026-04-30. If a model's writes start failing without code changes, run `npx prisma migrate status` first.
 
 ## Migration Warning Notes
 
 - Do not use `prisma db push` for normal schema evolution.
 - Do not run `prisma migrate reset` unless data loss is explicitly intended.
-- Use `npx prisma migrate dev` only when intentionally changing `schema.prisma`.
-- There was a previous migration failure around guardian profile data because a migration referenced `guardianEmail` before that column existed. The guardian migration has been rewritten defensively:
-  - creates/renames guardian tables safely,
-  - adds `guardianId` to members,
-  - only backfills if legacy inline guardian columns existed before the migration,
-  - avoids failing when those columns are absent.
+- Use `npx prisma migrate dev` only when intentionally changing `schema.prisma`. If you can't (shadow DB perms issue), hand-write the migration folder + SQL and run `npx prisma migrate deploy` — that's the pattern the recent migrations use.
+- The earlier guardian-profile migration was rewritten defensively (creates/renames tables safely, only backfills if legacy inline columns existed).
 - `20260429192044_add_missing_core_tables` is a broad migration that adds many feature tables and alters core tables. Review it carefully before editing, especially because it drops `events.price`.
 - If `next build` fails with missing page modules after a dev server was running, stop the dev server and clear ignored `.next` artifacts before rebuilding.
 - `next/font` fetches Google Fonts during a clean build. In restricted network environments, build may need network permission.
 
 ## Built And Working
 
-- Auth pages and dashboard protection are present.
-- Dashboard shell/sidebar navigation is present and updated to the current dark-neutral design system.
-- Dashboard overview page renders stats, calendar preview, quick links, recent members, and upcoming events.
-- Members page supports listing, filtering, adding/editing members, custom fields, import flow, guardian/minor fields, membership purchase modal, and export menu.
-- Memberships page supports plans, options, billing controls, and discounts.
-- Events page supports event listing, filters, event types, pricing fields, bookings modal, sessions, visibility/access fields, and Stripe charge route wiring.
+### Core platform
+- Auth pages and dashboard protection.
+- Dashboard shell/sidebar with current dark-neutral design system.
+- Dashboard overview: stats, calendar preview, quick links, recent members, upcoming events.
+- Light/dark dashboard theme toggle. Member portal stays light by design.
+- Brand assets in `public/brand/` wired into nav, member layout, dashboard sidebar, login/signup, onboarding, manifest icons. Tagline drives the landing headline.
+
+### Members & memberships
+- Members page with listing, filtering, add/edit, custom fields, CSV import (mapping mirrors enabled form fields), guardian/minor fields, membership purchase modal, export menu.
+- Member intake form builder (`/dashboard/settings/member-form`, stored on `Club.memberFormConfig` JSON). First-run gate on `/dashboard/members` until the owner saves a config.
+- **Member status auto-flip**: assigning a manual membership flips status to ACTIVE; canceling the last active sub flips to INACTIVE (via `recomputeMemberStatus` in `lib/memberStatus.ts`).
+- **Membership trial rules**: owner toggles "Offer a free trial" + days (1-365) + "Allow returning members to use the trial again". Both owner-side and member-self subscribe routes pass `trial_period_days` to Stripe when eligible.
+- Memberships page supports plans, options, billing controls, discounts, and now trial rules.
+
+### Classes & events & calendar
 - Classes page supports recurring class management and session viewing.
-- Products page supports product listing, edit/add flow, image upload, inventory fields, and sale flow.
-- Financials page has transaction, expenses, Stripe/bank/Plaid-related UI.
-- Documents page has document list/editor/signature-related UI.
-- Announcements page has announcement list, filters, modal, channels, and publish/unpublish dates.
-- Staff directory page has staff listing and add/edit modal.
-- Settings page has club/profile/settings-style sections, portal settings, legal/donation/settings controls, and password update UI.
-- Export endpoints and export menu exist for members, attendance, and transactions.
-- Database backup was created locally at `backups/clubos-backup-2026-04-29.sql`.
-- Public marketing landing page at `/` with embedded tiers, plus dedicated `/pricing` page (4-tier card grid, comparison table across all tiers, FAQ section, final CTA).
-- Members CSV import mapping mirrors the Add Member form: name, email, phone, DOB, gender, full address, status, tags, notes, isMinor, guardian (name/email/phone/relationship), and any active custom fields. The "Membership / purchase option" mapping is removed — memberships are no longer assigned via CSV.
-- Class & Event create/edit forms have a top-level "Accepted Memberships / Purchase Options" multi-select. Always rendered; empty-state shows a link to `/dashboard/memberships` when no active plans exist. Selection persists on edit. Memberships are stored as `pricingOptions: [{ type: "membership", membershipId }, ...]` on the existing JSON column on `RecurringClass` / `Event` — no new schema field added.
-- Membership-based free booking is wired:
-  - `POST /api/events/[id]/charge` — if the member has an active `MemberSubscription` matching one of the event's accepted memberships, creates a confirmed (or waitlisted) `Booking` for free and returns `{ coveredByMembership: true }` instead of a Stripe URL.
-  - `POST /api/classes/[id]/charge` — same logic for class sessions; on covered match, upserts an `AttendanceRecord` with status `PRESENT`. Otherwise opens a Stripe Checkout for `MEMBER` / `NON_MEMBER` / `DROP_IN` price.
-- Attendance panel "Add Member" search now has a "Register" button that expands an inline pricing chooser (Use accepted membership / Member / Non-member / Drop-in). Header surfaces "Accepted memberships: …" pulled from the new fields on `/api/attendance/[sessionId]`. The Event Bookings modal does the same.
-- Stripe webhook (`checkout.session.completed`) handles a new `classId + classSessionId` branch: records a `Transaction` with `type="CLASS"` and upserts the `AttendanceRecord` to status `DROP_IN`.
-- Legacy `Event.allowMembershipPayment` checkbox is hidden; the boolean is now derived from the multi-select on save (`allowMembershipPayment = allowedMembershipIds.length > 0`) so the schema field stays consistent without a separate UI toggle.
-- `PATCH /api/classes/[id]` schema now accepts `daysOfWeek`, `startTime`, `endTime`, `recurrenceStartDate`, `recurrenceEndDate` (these were previously stripped silently, so edits to days/times/dates didn't persist). Date strings are converted to `Date` in the handler.
-- Brand assets live in `public/brand/` (`logo.PNG`, `logo-light.PNG`, `icon.png`, `circle.PNG`, `tagline.png`). Wired into landing/pricing nav (full wordmark at 56 px height inside a 72 px header), member layout (icon badge + wordmark on the light bar), dashboard sidebar (icon + wordmark), login/signup (`circle.PNG` as a 96 px hero mark), onboarding, manifest icons, and Next.js auto-favicon at `app/icon.png`. The slogan **"Run your club. All in one system."** drives the landing hero headline.
-- Tier model: `directMessaging` and private lessons are available on **every** tier (Starter through Enterprise). Pricing page card highlights and the comparison table reflect this. The owner-side messaging routes (`/api/messages/dm`, `/api/messages/groups`) still call `requireGrowth` — the gate is currently a no-op since `directMessaging=true` on Starter, but the helper is still in place if the policy ever flips back.
-- Light/dark dashboard theme toggle in the sidebar (`components/ThemeToggle.tsx`). Persisted in localStorage; applied via `[data-theme="dark"]` on `<html>` with a no-flash inline script in `app/layout.tsx`. Member portal stays light by design.
-- Sidebar Communication group: Messaging + Announcements are nested under a single "Communication" parent. Sidebar icons rendered at fontSize 17 (was 12) in a wider 22 px gutter for legibility.
-- **Member intake form builder** (`/dashboard/settings/member-form`, helper lib `lib/memberForm.ts`):
-  - Stored on `Club.memberFormConfig` JSON: `{ enabledFields: string[], requiredFields: string[] }`.
-  - Defaults to enabled `[athleteName, email]` and required `[athleteName, email]`.
-  - Athlete name is always shown and always required (athleteName is a synthetic key that maps to `firstName + lastName` in the underlying schema).
-  - Email is always shown; required state configurable.
-  - Owner toggles which built-in fields show on the Add Member modal AND which are required. Custom fields continue to live in `CustomField`; their required state is still driven by `CustomField.required`.
-  - **First-run gate**: `/dashboard/members` shows a setup screen when `members.length === 0` AND no config has been saved. "Keep the defaults" PUTs the default config so the gate clears.
-  - The Add Member modal honors `enabledFields` (only shows them) and `requiredFields` (sets `required` on each input) per the config.
-  - The CSV import mapping dropdown only offers enabled keys; the **Preview import** button is disabled until every required field has a CSV column mapped, with the missing fields listed inline.
-  - Guardian name/email/phone are always available on import (they're conditional on `isMinor=true`, not toggleable).
-- **Club personalization for the member portal**:
-  - `Club.aboutUs` (text, max 5000 chars) editable on `/dashboard/settings/club`. Sent through `/api/club/update`.
-  - Logo upload (not URL): the existing `<ImageUpload>` component on `/dashboard/settings/club` writes to `/api/upload` and stores the resulting URL on `Club.logoUrl` — same flow as before, just confirmed working.
-  - `StaffProfile` gained `bio`, `publicEmail`, `publicPhone`, `photoUrl`, `showOnPortal`. Edited on `/dashboard/staff` Edit Staff modal in a "Member portal profile" section that hides the bio/contact fields when the toggle is off.
-  - New endpoints: `/api/member/club` (logo, name, tagline, aboutUs) and `/api/member/staff` (only profiles with `showOnPortal=true`).
-  - New page: `/member/staff` with photo, title, bio, mailto/tel links.
-  - Member portal home (Adult, Minor, Parent views) renders a `ClubBanner` showing logo + name + tagline + About Us with a "Read more" expand for long copy. Home grid gains an "Our team" card linking to `/member/staff`.
+- **Per-day class time overrides**: classes have a default start/end time; the editor shows each selected day with a Custom/Defaults toggle for per-day times. Sessions are regenerated on schedule changes, preserving sessions that already have attendance recorded.
+- Events page with listing, filters, event types, pricing fields, bookings modal, sessions, visibility/access, Stripe charge wiring.
+- Class & Event create/edit forms have a top-level "Accepted Memberships / Purchase Options" multi-select. Selection persists on edit. Memberships are stored as `pricingOptions: [{ type: "membership", membershipId }, ...]` on the existing JSON column.
+- Membership-based free booking is wired (both Events and Classes); emits a booking confirmation email on the free path.
+- Attendance panel "Add Member" has a pricing chooser (Use accepted membership / Member / Non-member / Drop-in). Header surfaces "Accepted memberships: …".
+- Stripe webhook handles `classId + classSessionId` branch: records `Transaction` (`type="CLASS"`) and upserts `AttendanceRecord` to `DROP_IN`.
+- **Calendar page** rebuilt as a unified feed: events + class sessions + confirmed private lessons in one grid, with kind chips (Events / Classes / Private lessons) and a secondary subtype chip strip auto-built from items in the visible range. Items color-coded per kind/type with start times. Detail panel with deep-link to source section. Backed by `/api/calendar`. **Classes are NOT an event type** — `CLASS` was removed from the events editor dropdown; recurring classes live only on `/dashboard/classes` (`RecurringClass`).
+- **Public / non-member event registration**: any event can enable a public link at `/e/[publicSlug]` (auto-generated slug, never changes once set). The page shows the event image, info, price, and an owner-defined custom form. `EventRegistration` model captures signups (matches an existing member by email when possible). Free signups confirm immediately; priced signups go through Stripe Checkout on the club's connected account → webhook marks `PAID`, writes a `Transaction` (type `EVENT`), and creates a `Booking` if a member matched.
+- **Tournament modes**: when event type = Tournament the editor offers **Host** (we run it — attach a registration form, public link auto-enabled) vs **Attend** (taking a team — gather signups + optional shared-cost split).
+  - **Variable cost** (Attend only): split a shared total across attendees. **Estimated (prior)** charges each signup `total ÷ expectedSignups` at registration. **Official (post)** collects free signups, then the owner clicks **Bill registrants** (`POST /api/events/[id]/bill-registrants`) which splits the official total across active registrants, creates a Stripe Checkout link per person, emails it, and stamps `variableCostBilledAt` (idempotent; supports re-bill-unpaid). This is the "on unpublish" billing action.
+  - Owner-defined registration **form builder** in the event editor (text / long text / email / phone / dropdown / checkbox fields, each optionally required). Stored as `Event.registrationForm` JSON. Registrations modal on the events list shows every signup with their form answers + payment status.
 
-## Built But Needs Testing
+### Documents & signatures
+- Documents page with list, editor, type/required flags, **signature renewal frequency** (Once / 30 / 90 / 180 / 365 / 730 days), Signatures button per doc that opens an audit modal showing every signature with member, signer, relationship, timestamp, IP, and Valid-until / Expired status.
+- Member documents page handles signing (with two-step confirm), shows "✓ Signed" / "Signature expired" / re-sign UX, and includes a child-switcher for parents so they can sign on behalf of linked minors.
+- `DocumentSignature` model captures the full audit trail (signer name, relationship SELF | GUARDIAN, signed-at, IP, user agent). API enforces that minors can't self-sign guardian-required docs.
 
-- Stripe Connect onboarding, status sync, dashboard redirect, Checkout, and webhook flows.
-- Member subscription activation/renewal/cancellation paths.
+### Member portal (guardian/minor)
+- `/member` portal home with separate Adult / Minor / Parent views and Link Child modal.
+- Parents see a child-switcher on `/member/bookings` and `/member/documents` so they can act on behalf of linked minors.
+- `MemberGuardianUser` junction records portal access; guardians are still the family profile and not duplicated.
+
+### Reports
+- `/dashboard/reports` with KPI cards (revenue / net / new members / attendance), 12-month revenue bar chart, breakdowns (revenue by source, members by status, subscriptions, attendance, top events, expenses by category), and CSV export links for members / attendance / transactions.
+- `/api/reports/overview` is tier-gated (Starter blocked); reports page shows an upgrade CTA when 403'd.
+
+### Staff scheduling, availability, payroll
+- `/dashboard/staff/availability` — pick a staff member, edit per-day recurring slots, add/remove date exceptions (`UNAVAILABLE` or `PARTIAL` with modified hours).
+- `/dashboard/staff/schedule` — weekly grid (Sun-Sat columns × staff rows) showing availability windows, class assignments (expanded from `RecurringClass.assignedStaffIds`), event assignments (`EventStaffAssignment`), and date exceptions. Prev / This week / Next nav.
+- `/dashboard/staff/payroll` — date range presets + custom; per-staff table of scheduled hours, **class teaching hours** (with per-class breakdown in expandable details), hourly pay, salary, private lesson pay. CSV export.
+- Backed by `/api/staff/schedule` and `/api/staff/payroll`.
+
+### Stripe / billing / file storage
+- Stripe Connect (member → club) onboarding, status sync, dashboard redirect, Checkout, webhook flows.
+- Member subscription activation / renewal / cancellation through webhook handlers.
+- **ClubOS platform subscription billing** (club → AthletixOS):
+  - `/api/club/subscription/checkout` opens platform-account Stripe Checkout for the chosen tier (uses `STRIPE_PRICE_GROWTH / STRIPE_PRICE_PRO / STRIPE_PRICE_ENTERPRISE` env vars).
+  - `/api/club/subscription/portal` opens Stripe Billing Portal for plan-swap / card / invoice / cancel.
+  - Webhook handles platform `checkout.session.completed` (sets tier + `stripeCustomerId` + `stripeSubscriptionId` + `subscriptionStatus="active"`), `customer.subscription.updated` (status sync + tier swap via Price-ID mapping), `customer.subscription.deleted` (downgrades to Starter).
+  - `/api/club/tier` PATCH blocks direct paid-tier set without a promo code; paid plans must go through Checkout.
+- **Webhook hardening + observability**: `StripeWebhookEvent` table logs every event with idempotency (skips duplicates by `stripeEventId`). Failures are caught and the error stored on the row instead of 500'ing — Stripe doesn't retry-storm on persistent bugs.
+- **Diagnostics page** at `/dashboard/settings/diagnostics`: setup checklist (env vars, Connect status, Price IDs), 24h / total / error counts, last 50 webhook events with status badges and live-mode indicators, copy-paste webhook URL.
+- **Private file storage**: `/api/upload` writes to `./storage/uploads` (gitignored, outside `public/`) with random 32-hex storage keys + an `UploadedFile` row. Files served only via `/api/files/[id]` which enforces `session.user.clubId === file.clubId`. Old `/public/uploads/*` URLs from earlier uploads still resolve via Next static serving for back-compat.
+
+### Email notifications (transactional)
+Templates in `lib/email.ts`: `sendWelcomeEmail`, `sendStaffInviteEmail`, `sendPasswordResetEmail`, `sendBookingConfirmationEmail`, `sendMembershipActivatedEmail`, `sendPaymentFailedEmail`. Wired into:
+
+| Trigger                                                        | Recipient                          |
+|----------------------------------------------------------------|------------------------------------|
+| Owner adds staff (`POST /api/staff`)                           | New staff member with temp password |
+| Owner adds member (`POST /api/members`)                        | Member email (or guardian for minors); points to `/member/signup` |
+| Free membership-covered event booking (owner-side charge)      | Member (or guardian)               |
+| Free membership-covered class drop-in (owner-side charge)      | Member (or guardian)               |
+| Member-side free / membership-covered event registration       | Self / guardian                    |
+| Stripe checkout.session.completed (membership activated)       | Member                             |
+| Stripe checkout.session.completed (paid event / class booking) | Member                             |
+| Stripe invoice.payment_failed                                  | Member                             |
+| Announcement broadcast with email channel selected             | All filtered recipients            |
+
+All sends are `try/catch` + `console.error` — a failed email never breaks the underlying flow. Recipient resolution prefers guardian email for minors, then member email, then linked User email.
+
+### Club personalization
+- `Club.aboutUs`, `coverImageUrl`, `contactEmail`, `contactPhone`, `websiteUrl`, `socialLinks`, `hoursOfOperation` all editable on `/dashboard/settings/club`.
+- `StaffProfile` has `bio`, `publicEmail`, `publicPhone`, `photoUrl`, `showOnPortal`. Edited on `/dashboard/staff` Edit modal in a "Member portal profile" section.
+- `/member/staff` page shows photo, title, bio, mailto/tel links for staff with `showOnPortal=true`.
+- Member portal home (Adult, Minor, Parent views) renders a `ClubBanner` with logo + name + tagline + About Us + contact info + hours.
+
+### Misc
+- Members CSV import mapping mirrors the Add Member form (name, email, phone, DOB, gender, full address, status, tags, notes, isMinor, guardian fields, active custom fields). Membership assignment via CSV was removed.
+- Public marketing landing at `/` with embedded tiers; `/pricing` page with 4-tier card grid, comparison table, FAQ.
+- Export endpoints (members, attendance, transactions) gated on `reports` tier flag.
+
+## Built But Needs End-to-End Testing
+
+These flows exist in code but haven't been verified against a live Stripe environment with webhook forwarding:
+
+- Stripe Connect onboarding, status sync, dashboard redirect, Checkout, webhook (Connect events).
+- ClubOS platform subscription Checkout end-to-end (need live Price IDs in env).
+- Member subscription activation / renewal / cancellation through real Stripe webhooks.
+- Trial period flow (Stripe should hold the first charge until trial ends).
 - Product sales and Stripe payment path.
-- Event booking charge path.
-- Member import edge cases, especially minors/guardians/custom fields.
-- Guardian/family linking across member creation, import, and member portal.
-- Attendance flows across class sessions and events.
-- Documents requiring guardian signature and document expiration behavior.
-- Plaid link token/exchange/transactions flow.
-- Private lesson booking approval/payment/credit ledger paths.
-- Staff availability, pay-rate APIs, and private lesson pay logic.
-- Messaging direct/group/broadcast behavior and read states.
-- Membership-covered class/event registration: pick member with active sub on an accepted plan and confirm free booking is created.
-- Paid class drop-in via `/api/classes/[id]/charge` → Stripe Checkout → webhook creating `Transaction` (`type="CLASS"`) and `AttendanceRecord` (`DROP_IN`). Currently the paid path requires the staff/member to complete checkout before attendance is recorded; if abandoned, no record is left behind.
-- Class edit persistence after the PATCH-schema fix (verify days-of-week / start time / end time / recurrence date changes survive a reload).
-- Member self-purchase flows: `/member/memberships` → Stripe subscription Checkout → webhook activates the `MemberSubscription`; `/member/products/[id]/buy` → Checkout → webhook flips sale to `COMPLETED` and decrements inventory; `/member/events/[id]/register` paid path → Checkout → webhook now also creates the `Booking` (closed the previous gap).
-- Theme toggle: confirm dashboard pages render correctly when flipped; `bg-app-bg` / `bg-surface` / `text-text-*` / `border-app-border` classes inherit through Tailwind v4 `@theme` `var()` references. Anything still using raw light Tailwind classes will not flip.
-- Member form builder + first-run gate: confirm a fresh club lands on the setup screen, can save defaults to clear the gate, and that requiring an extra field then importing a CSV without it correctly blocks Preview.
-- Club personalization: confirm logo upload on `/dashboard/settings/club` round-trips through `/api/upload` and renders on `/member` ClubBanner; confirm a staff member toggled `showOnPortal=true` appears on `/member/staff` while toggled-off staff are excluded.
+- Paid event/class drop-in via charge → Stripe Checkout → webhook creating `Transaction` and `Booking` / `AttendanceRecord`.
+- Plaid link token / exchange / transactions flow.
+- Email send-out under real SMTP credentials (currently `console.log` fallback if `SMTP_HOST` unset).
+- Document signature re-sign flow once a signature actually expires by `signatureValidForDays`.
 
 ## Partially Built / Wired Inconsistently
 
 - Some old top-level routes remain alongside newer grouped routes, especially purchase options.
 - `/dashboard/schedule` and `/dashboard/staff/schedule` both exist; current sidebar points under Staff.
-- Staff schedule, availability, and payroll pages are placeholders or thin shells compared with APIs/schema.
-- Reports page is a placeholder.
-- Tier gating data/UI exists in places but enforcement is not complete.
-- Club branding color remains user-configurable in settings and may intentionally override accent colors in member-facing contexts.
-- Member portal is present but not fully verified against all guardian/minor rules.
-- Messaging and announcements both exist, but product distinction and member/guardian delivery rules need testing.
-- Financials/Plaid/expenses are partially wired and need real-data validation.
-- Add Staff (invite) modal does **not** collect bio/photo/public-contact fields yet — only the Edit Staff modal does. Owner adds the staff member, then opens Edit to fill the public profile.
-- Tier-gating helper `requireGrowth` in `/api/messages/*` is now effectively a no-op (Starter has `directMessaging=true`). If the policy ever flips, the gate is still in place; otherwise it can be removed safely.
-- Member-side messaging endpoints don't apply tier gating — they just check session. Same with member-side memberships/events/products endpoints.
-- Member portal explicitly stays light-themed; raw `bg-stone-*` / `bg-white` / `text-stone-*` classes there are intentional and will not respond to the dashboard dark-mode toggle.
+- Add Staff (invite) modal does not collect bio/photo/public-contact fields yet — only the Edit Staff modal does. Owner adds the staff member, then opens Edit to fill the public profile.
+- Tier-gating helper `requireGrowth` in `/api/messages/*` is effectively a no-op since `directMessaging=true` on Starter. Leave in place if policy might flip.
+- Member-side messaging, memberships, events, products endpoints check session but don't apply tier gating beyond what the owner's plan allows.
+- Member portal stays light-themed intentionally; raw `bg-stone-*` / `bg-white` / `text-stone-*` classes there will not respond to the dashboard dark-mode toggle.
 
 ## Not Built Yet
 
-- Full tier gating and billing enforcement.
+- Multi-location full UX (schema + `maxLocations` gating in place, but the locations page is thin).
 - Native mobile apps.
-- Production-grade notification delivery for email/SMS/push.
-- Full report builder/analytics suite.
-- Complete staff payroll and payout workflow.
-- Complete recurring class roster/enrollment product.
-- Complete guardian account management UX across all surfaces.
-- Complete document form builder with signature audit trail.
-- Production file storage hardening for uploads.
-- Theme preference persisted to a User column (currently localStorage only — toggling on a different device starts in light mode).
+- SMS broadcast delivery (template + UI flag exists; provider not wired).
+- Push notifications.
+- Full report builder (current `/dashboard/reports` is fixed-shape).
+- Complete recurring class roster/enrollment product (sessions exist; UX for enrollment vs. attendance not finalized).
+- Theme preference persisted to a User column (currently localStorage only).
 - Bio/photo/public-contact fields in the Add Staff (invite) modal — currently Edit-only.
-- Optimized/compressed brand assets (`logo.PNG` and `circle.PNG` are ~1 MB each; fine for dev, should be compressed or converted to optimized variants before production rollout).
+- Optimized/compressed brand assets (`logo.PNG` and `circle.PNG` are ~1 MB each; should be compressed before production rollout).
 
 ## Known Issues
 
@@ -428,9 +464,9 @@ Current migration status:
 - `pg_dump` from PostgreSQL 16 cannot dump the local PostgreSQL 18 database. Use `/Library/PostgreSQL/18/bin/pg_dump`.
 - Dashboard design is mostly tokenized, but new pages must continue using the current tokens.
 - Existing routes and APIs are broad; inspect before adding duplicates.
-- Some workflows have schema/API/UI present but need end-to-end validation before calling them complete.
 - Pending Prisma migrations silently break write paths long after schema/code look correct. Always check `npx prisma migrate status` first when a single model's writes start failing.
-- The Events bookings flow (and now Classes) opens Stripe Checkout in a new tab and does not auto-create the booking client-side; the membership-covered branch creates it inline, the paid branch relies on the webhook.
+- The paid Events/Classes booking flow opens Stripe Checkout in a new tab and does not auto-create the booking client-side; the membership-covered branch creates it inline, the paid branch relies on the webhook.
+- `prisma migrate dev` may fail on shadow-database permissions. The fix is to hand-write the migration folder + SQL and run `npx prisma migrate deploy` (the four most recent migrations were created this way).
 
 ## What To Avoid Next Time
 
@@ -440,19 +476,32 @@ Current migration status:
 - Do not create broad migrations that drop columns without a preservation/backfill plan.
 - Do not reintroduce old color classes or random color families.
 - Do not stage `.env`, `.next`, `node_modules`, local SQL backups, or debug archives.
+- Do not store new uploads under `/public/uploads` — use the private storage flow via `/api/upload` so files are club-scoped.
 - Do not leave dev server running while doing production build verification.
 - Do not assume a feature is done because an API route exists.
 
+## Required Env Vars
+
+Documented in `.env.example`. Critical for production:
+
+- `DATABASE_URL` — Postgres
+- `NEXTAUTH_URL` — drives email links and Stripe success/cancel redirects
+- `NEXTAUTH_SECRET`
+- `STRIPE_SECRET_KEY`
+- `STRIPE_WEBHOOK_SECRET`
+- `STRIPE_PRICE_GROWTH` / `STRIPE_PRICE_PRO` / `STRIPE_PRICE_ENTERPRISE` — recurring Price IDs for the ClubOS-own tiers (different in test vs live mode)
+- `UPLOADS_DIR` (optional; defaults to `./storage/uploads`)
+- `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_SECURE` / `EMAIL_FROM` (optional; falls back to `console.log` if `SMTP_HOST` missing)
+- `PLAID_CLIENT_ID` / `PLAID_SECRET` / `PLAID_ENV` (optional)
+
 ## Next Priorities
 
-- Verify all dashboard flows against real local data.
-- Normalize remaining duplicate/legacy routes without deleting working pages prematurely.
-- Review and harden the broad `add_missing_core_tables` migration.
-- Test Stripe flows end to end with webhook forwarding.
-- Test member/guardian creation, import, linking, and member portal visibility.
-- Finish staff schedule/availability/payroll UX.
-- Finish reports page with useful read-only analytics first.
-- Add focused tests or smoke scripts for critical flows.
+- Run live Stripe end-to-end with the CLI (`stripe listen --forward-to localhost:3001/api/stripe/webhook`) and verify the diagnostics page surfaces each event correctly.
+- Configure live Stripe Price IDs in production env and verify ClubOS subscription upgrade flow round-trips.
+- Build out a real multi-location UX (locations page is thin, even though schema/gating is in place).
+- Wire SMS provider for the announcement broadcast flow (template + tier flag exist).
+- Add Add-Staff (invite) bio/photo fields to remove the two-step "invite then edit" workflow.
+- Add focused smoke scripts for: member-add → status flip, trial flow, document-sign + re-sign cycle, calendar feed, class schedule changes regenerating sessions.
 
 ## Next Build Script
 
@@ -466,12 +515,14 @@ Use this checklist for the next development session:
 3. Make one feature branch or one commit per feature.
 4. Keep changes scoped to the feature.
 5. For UI changes, use the current design tokens.
-6. For schema changes, use `npx prisma migrate dev`.
+6. For schema changes:
+   - First try `npx prisma migrate dev --name <name>`.
+   - If shadow-DB permissions block it: hand-write a migration folder + `migration.sql`, then `npx prisma migrate deploy` + `npx prisma generate`.
 7. Avoid `prisma migrate reset` unless explicitly intended.
 8. Run before each commit:
-   - `npm run build`
    - `npx prisma validate`
    - `npx prisma migrate status`
+   - `npx tsc --noEmit` (filter out the pre-existing `headers().get` and outer-repo `legalEntityId` errors)
 9. Commit working checkpoints often.
 10. Push after a clean checkpoint.
 
@@ -479,14 +530,8 @@ Use this checklist for the next development session:
 
 - UI polish
 - Color scheme refinements
-- Member/guardian flow
-- Purchase options
-- Staff scheduling
-- Private lessons
-- Attendance
-- Announcements/messaging
-- Exports/reports
-- Tier gating
-- Stripe/AthletixOS billing
-- Mobile/PWA/native app path
-
+- Full multi-location UX
+- Complete document form builder (current renderer is HTML + acknowledgement; no field-by-field signature UI)
+- Push / SMS delivery providers
+- Full report builder / saved views
+- Mobile / PWA / native app path

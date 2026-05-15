@@ -100,7 +100,19 @@ export async function POST(req: Request) {
     };
 
     const checkoutMode: "subscription" | "payment" = isRecurring ? "subscription" : "payment";
-    const appFeePercent = club.tier === "starter" ? 2.5 : club.tier === "growth" ? 1.25 : 0;
+    const appFeePercent = club.tier === "starter" ? 2.5 : 0;
+
+    // Honor trial rules — same logic as owner-side subscribe
+    let trialPeriodDays: number | null = null;
+    if (membership.trialEnabled && (membership.trialDays ?? 0) > 0 && isRecurring) {
+      const priorActive = await prisma.memberSubscription.findFirst({
+        where: { memberId: member.id, membershipId, status: { in: ["active", "past_due", "canceled", "expired"] } },
+        select: { id: true },
+      });
+      if (!priorActive || membership.trialAppliesToReturning) {
+        trialPeriodDays = membership.trialDays!;
+      }
+    }
 
     const checkoutSession = await stripe.checkout.sessions.create(
       {
@@ -119,6 +131,7 @@ export async function POST(req: Request) {
                 application_fee_percent: appFeePercent,
                 metadata: { memberSubscriptionId: memberSub.id, memberId: member.id, clubId: club.id },
                 ...(!membership.autoRenewDefault ? { cancel_at_period_end: true } : {}),
+                ...(trialPeriodDays ? { trial_period_days: trialPeriodDays } : {}),
               },
             }
           : {

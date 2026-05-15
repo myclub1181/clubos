@@ -6,6 +6,14 @@ import ImageUpload from "@/components/ImageUpload";
 
 type BuiltInType = "CLASS" | "PRIVATE" | "CLINIC" | "CAMP" | "TOURNAMENT" | "OTHER";
 
+type FormFieldDef = {
+  id: string;
+  label: string;
+  type: "text" | "email" | "phone" | "textarea" | "select" | "checkbox";
+  required: boolean;
+  options?: string[];
+};
+
 type ClubEventType = {
   id: string;
   name: string;
@@ -45,7 +53,14 @@ type Event = {
   location: { name: string } | null;
   sessions: EventSession[];
   staffAssignments?: { user: { id: string; firstName: string; lastName: string } }[];
-  _count: { bookings: number };
+  _count: { bookings: number; registrations?: number };
+  isTournament?: boolean;
+  tournamentMode?: string | null;
+  publicSlug?: string | null;
+  publicRegistration?: boolean;
+  variableCostEnabled?: boolean;
+  variableCostMode?: string | null;
+  variableCostBilledAt?: string | null;
 };
 
 type Member = { id: string; firstName: string; lastName: string };
@@ -81,6 +96,7 @@ export default function EventsPage() {
   const [showAdd, setShowAdd] = useState(false);
   const [editing, setEditing] = useState<Event | null>(null);
   const [viewingBookings, setViewingBookings] = useState<string | null>(null);
+  const [viewingRegistrations, setViewingRegistrations] = useState<string | null>(null);
   const [showManageTypes, setShowManageTypes] = useState(false);
   const [filter, setFilter] = useState<"upcoming" | "past" | "all">("upcoming");
 
@@ -220,6 +236,11 @@ export default function EventsPage() {
                   </div>
 
                   <div className="flex gap-1 flex-shrink-0">
+                    {(e.publicRegistration || e.tournamentMode === "HOST" || (e._count.registrations ?? 0) > 0) && (
+                      <button onClick={() => setViewingRegistrations(e.id)} className="text-xs text-text-muted hover:text-text-primary px-2 py-1 rounded hover:bg-app-bg">
+                        Registrations{(e._count.registrations ?? 0) > 0 ? ` (${e._count.registrations})` : ""}
+                      </button>
+                    )}
                     <button onClick={() => setViewingBookings(e.id)} className="text-xs text-text-muted hover:text-text-primary px-2 py-1 rounded hover:bg-app-bg">Bookings</button>
                     <button onClick={() => setEditing(e)} className="text-xs text-text-muted hover:text-text-primary px-2 py-1 rounded hover:bg-app-bg">Edit</button>
                     <button onClick={() => handleDelete(e.id)} className="text-xs text-red-600 hover:bg-red-50 px-2 py-1 rounded">Delete</button>
@@ -243,6 +264,8 @@ export default function EventsPage() {
       )}
 
       {viewingBookings && <BookingsModal eventId={viewingBookings} onClose={() => { setViewingBookings(null); load(); }} />}
+
+      {viewingRegistrations && <RegistrationsModal eventId={viewingRegistrations} onClose={() => { setViewingRegistrations(null); load(); }} />}
 
       {showManageTypes && (
         <ManageTypesModal
@@ -283,10 +306,12 @@ function EventModal({ event, clubEventTypes, memberships, staffList, onClose, on
   const defaultEnd = new Date(defaultStart);
   defaultEnd.setHours(defaultEnd.getHours() + 1);
 
-  // Determine initial type selection
+  // Determine initial type selection. Classes are their OWN thing
+  // (/dashboard/classes → RecurringClass) and are intentionally not an event
+  // type here, so the default is OTHER.
   const initTypeKey = event?.customEventTypeId
     ? `custom:${event.customEventTypeId}`
-    : (event?.type || "CLASS");
+    : (event?.type && event.type !== "CLASS" ? event.type : "OTHER");
 
   const [typeKey, setTypeKey] = useState<string>(initTypeKey);
   const [name, setName] = useState(event?.name || "");
@@ -316,6 +341,39 @@ function EventModal({ event, clubEventTypes, memberships, staffList, onClose, on
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+
+  // Tournament + public-registration state
+  const ev = event as any;
+  const [tournamentMode, setTournamentMode] = useState<string>(ev?.tournamentMode || "");
+  const [publicRegistration, setPublicRegistration] = useState<boolean>(!!ev?.publicRegistration);
+  const [publicFormIntro, setPublicFormIntro] = useState<string>(ev?.publicFormIntro || "");
+  const [formFields, setFormFields] = useState<FormFieldDef[]>(
+    Array.isArray(ev?.registrationForm) ? ev.registrationForm : []
+  );
+  const [varCostEnabled, setVarCostEnabled] = useState<boolean>(!!ev?.variableCostEnabled);
+  const [varCostMode, setVarCostMode] = useState<string>(ev?.variableCostMode || "ESTIMATED");
+  const [varCostTotal, setVarCostTotal] = useState<string>(
+    ev?.variableCostTotal != null ? String(ev.variableCostTotal) : ""
+  );
+  const [varCostEstSignups, setVarCostEstSignups] = useState<string>(
+    ev?.variableCostEstimatedSignups != null ? String(ev.variableCostEstimatedSignups) : ""
+  );
+
+  const isTournament = typeKey === "TOURNAMENT";
+  const publicSlug: string | null = ev?.publicSlug || null;
+
+  function addFormField() {
+    setFormFields((f) => [
+      ...f,
+      { id: `f${Date.now().toString(36)}`, label: "", type: "text", required: false },
+    ]);
+  }
+  function updateFormField(i: number, patch: Partial<FormFieldDef>) {
+    setFormFields((f) => f.map((x, idx) => (idx === i ? { ...x, ...patch } : x)));
+  }
+  function removeFormField(i: number) {
+    setFormFields((f) => f.filter((_, idx) => idx !== i));
+  }
 
   function addSession() {
     const lastEnd = sessions.length > 0 ? sessions[sessions.length - 1].endsAt : startsAt;
@@ -373,6 +431,19 @@ function EventModal({ event, clubEventTypes, memberships, staffList, onClose, on
         pricingOptions: allowedMembershipIds.map((membershipId) => ({ type: "membership", membershipId })),
         staffUserIds,
         imageUrl: imageUrl || null,
+        tournamentMode: type === "TOURNAMENT" ? (tournamentMode || null) : null,
+        publicRegistration,
+        publicFormIntro: publicFormIntro || null,
+        registrationForm: formFields
+          .filter((f) => f.label.trim())
+          .map((f) => ({ ...f, label: f.label.trim() })),
+        variableCostEnabled: type === "TOURNAMENT" && tournamentMode === "ATTEND" ? varCostEnabled : false,
+        variableCostMode: varCostEnabled ? varCostMode : null,
+        variableCostTotal: varCostEnabled && varCostTotal ? parseFloat(varCostTotal) : null,
+        variableCostEstimatedSignups:
+          varCostEnabled && varCostMode === "ESTIMATED" && varCostEstSignups
+            ? parseInt(varCostEstSignups, 10)
+            : null,
         sessions: sessions.length > 0
           ? sessions.map((s, i) => ({ name: s.name || null, startsAt: new Date(s.startsAt).toISOString(), endsAt: new Date(s.endsAt).toISOString(), sortOrder: i }))
           : [],
@@ -406,7 +477,6 @@ function EventModal({ event, clubEventTypes, memberships, staffList, onClose, on
             <label className="block text-sm font-medium text-text-primary mb-1">Event type</label>
             <select value={typeKey} onChange={(e) => setTypeKey(e.target.value)} className="w-full px-3 py-2 border border-app-border rounded-lg text-sm bg-surface">
               <optgroup label="Built-in types">
-                <option value="CLASS">Class</option>
                 <option value="PRIVATE">Private session</option>
                 <option value="CLINIC">Clinic</option>
                 <option value="CAMP">Camp</option>
@@ -421,6 +491,207 @@ function EventModal({ event, clubEventTypes, memberships, staffList, onClose, on
                 </optgroup>
               )}
             </select>
+            <p className="text-[11px] text-text-muted mt-1">
+              Recurring classes live on their own <a href="/dashboard/classes" className="text-brand hover:underline">Classes</a> page — they aren't an event type.
+            </p>
+          </div>
+
+          {/* Tournament setup */}
+          {isTournament && (
+            <div className="border border-app-border rounded-lg p-4 space-y-4 bg-app-bg/40">
+              <p className="text-xs uppercase tracking-wider text-text-muted font-medium">Tournament setup</p>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setTournamentMode("HOST")}
+                  className={`text-left px-3 py-2.5 rounded-lg border text-sm ${tournamentMode === "HOST" ? "border-brand bg-brand/10 text-brand" : "border-app-border text-text-primary hover:bg-app-bg"}`}
+                >
+                  <span className="font-medium block">Host a tournament</span>
+                  <span className="text-[11px] text-text-muted">We're running it — collect registrations</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTournamentMode("ATTEND")}
+                  className={`text-left px-3 py-2.5 rounded-lg border text-sm ${tournamentMode === "ATTEND" ? "border-brand bg-brand/10 text-brand" : "border-app-border text-text-primary hover:bg-app-bg"}`}
+                >
+                  <span className="font-medium block">Attending a tournament</span>
+                  <span className="text-[11px] text-text-muted">Gather signups for a trip & split costs</span>
+                </button>
+              </div>
+
+              {/* ATTEND → variable cost */}
+              {tournamentMode === "ATTEND" && (
+                <div className="border-t border-app-border pt-3 space-y-3">
+                  <label className="flex items-center justify-between">
+                    <span className="text-sm text-text-primary">Split a shared cost across attendees</span>
+                    <button
+                      type="button"
+                      onClick={() => setVarCostEnabled(!varCostEnabled)}
+                      className={`relative inline-flex h-5 w-9 rounded-full transition flex-shrink-0 ${varCostEnabled ? "bg-brand" : "bg-app-border"}`}
+                    >
+                      <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transition-transform mt-0.5 ${varCostEnabled ? "translate-x-4" : "translate-x-0.5"}`} />
+                    </button>
+                  </label>
+
+                  {varCostEnabled && (
+                    <>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setVarCostMode("ESTIMATED")}
+                          className={`text-left px-3 py-2 rounded-lg border text-xs ${varCostMode === "ESTIMATED" ? "border-brand bg-brand/10 text-brand" : "border-app-border text-text-primary hover:bg-app-bg"}`}
+                        >
+                          <span className="font-medium block">Estimated (prior)</span>
+                          <span className="text-text-muted">Charge each signup up front</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setVarCostMode("OFFICIAL")}
+                          className={`text-left px-3 py-2 rounded-lg border text-xs ${varCostMode === "OFFICIAL" ? "border-brand bg-brand/10 text-brand" : "border-app-border text-text-primary hover:bg-app-bg"}`}
+                        >
+                          <span className="font-medium block">Official (post)</span>
+                          <span className="text-text-muted">Bill after the tournament</span>
+                        </button>
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-xs font-medium text-text-primary mb-1">
+                            {varCostMode === "OFFICIAL" ? "Official total cost" : "Estimated total cost"}
+                          </label>
+                          <input
+                            type="number" min="0" step="0.01" value={varCostTotal}
+                            onChange={(e) => setVarCostTotal(e.target.value)}
+                            placeholder="500.00"
+                            className="w-full px-3 py-2 border border-app-border rounded-lg text-sm"
+                          />
+                        </div>
+                        {varCostMode === "ESTIMATED" && (
+                          <div>
+                            <label className="block text-xs font-medium text-text-primary mb-1">Expected # of signups</label>
+                            <input
+                              type="number" min="1" value={varCostEstSignups}
+                              onChange={(e) => setVarCostEstSignups(e.target.value)}
+                              placeholder="20"
+                              className="w-full px-3 py-2 border border-app-border rounded-lg text-sm"
+                            />
+                          </div>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-text-muted">
+                        {varCostMode === "ESTIMATED"
+                          ? varCostTotal && varCostEstSignups
+                            ? `Each signup pays $${(Number(varCostTotal) / Number(varCostEstSignups || 1)).toFixed(2)} at registration.`
+                            : "Each signup pays total ÷ expected signups, charged at registration."
+                          : "Signups are free now. After the tournament, use “Bill registrants” on the event to split the official total across everyone who signed up."}
+                      </p>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Public / non-member registration */}
+          <div className="border border-app-border rounded-lg p-4 space-y-3 bg-app-bg/40">
+            <label className="flex items-center justify-between">
+              <div>
+                <span className="text-sm font-medium text-text-primary block">Public registration link</span>
+                <span className="text-[11px] text-text-muted">Let non-members sign up via a shareable link</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPublicRegistration(!publicRegistration)}
+                className={`relative inline-flex h-5 w-9 rounded-full transition flex-shrink-0 ${publicRegistration ? "bg-brand" : "bg-app-border"}`}
+              >
+                <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transition-transform mt-0.5 ${publicRegistration ? "translate-x-4" : "translate-x-0.5"}`} />
+              </button>
+            </label>
+
+            {(publicRegistration || (isTournament && tournamentMode === "HOST")) && (
+              <>
+                {publicSlug && (
+                  <div className="text-xs bg-surface border border-app-border rounded-lg px-3 py-2 flex items-center justify-between gap-2">
+                    <code className="truncate text-text-primary">{`${typeof window !== "undefined" ? window.location.origin : ""}/e/${publicSlug}`}</code>
+                    <button
+                      type="button"
+                      onClick={() => navigator.clipboard?.writeText(`${window.location.origin}/e/${publicSlug}`)}
+                      className="text-brand hover:underline flex-shrink-0"
+                    >
+                      Copy
+                    </button>
+                  </div>
+                )}
+                {!publicSlug && (
+                  <p className="text-[11px] text-text-muted">The shareable link will be generated when you save.</p>
+                )}
+
+                <div>
+                  <label className="block text-xs font-medium text-text-primary mb-1">Intro shown above the form (optional)</label>
+                  <textarea
+                    value={publicFormIntro}
+                    onChange={(e) => setPublicFormIntro(e.target.value)}
+                    rows={2}
+                    placeholder="e.g. Register your athlete for the Spring Open. Questions? Email us."
+                    className="w-full px-3 py-2 border border-app-border rounded-lg text-sm resize-none"
+                  />
+                </div>
+
+                {/* Custom registration form builder */}
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-xs font-medium text-text-primary">Registration form fields</label>
+                    <button type="button" onClick={addFormField} className="text-xs text-brand hover:underline">+ Add field</button>
+                  </div>
+                  <p className="text-[11px] text-text-muted mb-2">Name, email, and phone are always collected. Add anything else you need.</p>
+                  {formFields.length === 0 ? (
+                    <p className="text-[11px] text-text-muted">No extra fields yet.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {formFields.map((f, i) => (
+                        <div key={f.id} className="border border-app-border rounded-lg p-2.5 space-y-2 bg-surface">
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="text" value={f.label}
+                              onChange={(e) => updateFormField(i, { label: e.target.value })}
+                              placeholder="Field label (e.g. Athlete age, T-shirt size)"
+                              className="flex-1 px-2 py-1.5 border border-app-border rounded text-sm"
+                            />
+                            <button type="button" onClick={() => removeFormField(i)} className="text-text-muted hover:text-red-600 text-lg leading-none">×</button>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <select
+                              value={f.type}
+                              onChange={(e) => updateFormField(i, { type: e.target.value as FormFieldDef["type"] })}
+                              className="px-2 py-1.5 border border-app-border rounded text-sm bg-surface"
+                            >
+                              <option value="text">Short text</option>
+                              <option value="textarea">Long text</option>
+                              <option value="email">Email</option>
+                              <option value="phone">Phone</option>
+                              <option value="select">Dropdown</option>
+                              <option value="checkbox">Checkbox</option>
+                            </select>
+                            <label className="flex items-center gap-1.5 text-xs text-text-muted">
+                              <input type="checkbox" checked={f.required} onChange={(e) => updateFormField(i, { required: e.target.checked })} />
+                              Required
+                            </label>
+                          </div>
+                          {f.type === "select" && (
+                            <input
+                              type="text"
+                              value={(f.options || []).join(", ")}
+                              onChange={(e) => updateFormField(i, { options: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })}
+                              placeholder="Comma-separated options: Small, Medium, Large"
+                              className="w-full px-2 py-1.5 border border-app-border rounded text-sm"
+                            />
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
           </div>
 
           <div>
@@ -861,6 +1132,175 @@ function BookingsModal({ eventId, onClose }: { eventId: string; onClose: () => v
                       <button onClick={() => handleRemove(b.member.id)} className="text-xs text-red-600 hover:bg-red-50 px-2 py-1 rounded">Cancel</button>
                     </div>
                   ))}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Registrations Modal ──────────────────────────────────────────────────────
+type RegistrationRow = {
+  id: string;
+  name: string;
+  email: string;
+  phone: string | null;
+  status: string;
+  amountDue: number | null;
+  amountPaid: number | null;
+  paymentUrl: string | null;
+  formResponses: Record<string, string | boolean>;
+  createdAt: string;
+  member: { id: string; firstName: string; lastName: string } | null;
+};
+type RegFormField = { id: string; label: string };
+
+function RegistrationsModal({ eventId, onClose }: { eventId: string; onClose: () => void }) {
+  const [data, setData] = useState<{
+    event: {
+      name: string;
+      publicSlug: string | null;
+      registrationForm: RegFormField[] | null;
+      variableCostEnabled: boolean;
+      variableCostMode: string | null;
+      variableCostTotal: number | null;
+      variableCostBilledAt: string | null;
+    };
+    registrations: RegistrationRow[];
+    activeCount: number;
+    officialPerHead: number | null;
+  } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [billing, setBilling] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  function load() {
+    setLoading(true);
+    fetch(`/api/events/${eventId}/registrations`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { setData(d); setLoading(false); });
+  }
+  useEffect(() => { load(); }, [eventId]);
+
+  async function billRegistrants(force: boolean) {
+    if (!confirm(force ? "Re-bill everyone still unpaid?" : "Split the official total across all registrants and email them payment links?")) return;
+    setBilling(true);
+    setMsg("");
+    const res = await fetch(`/api/events/${eventId}/bill-registrants`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ force }),
+    });
+    const d = await res.json().catch(() => ({}));
+    setBilling(false);
+    if (!res.ok) { setMsg(typeof d.error === "string" ? d.error : "Billing failed"); return; }
+    setMsg(`Billed ${d.billed} registrant(s) at $${d.perHead?.toFixed(2)} each. ${d.skipped ? `${d.skipped} already paid.` : ""}`);
+    load();
+  }
+
+  const ev = data?.event;
+  const customFields = ev?.registrationForm ?? [];
+  const isOfficial = ev?.variableCostEnabled && ev.variableCostMode === "OFFICIAL";
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+      <div className="bg-surface rounded-xl w-full max-w-3xl max-h-[90vh] overflow-y-auto border border-app-border">
+        <div className="px-6 py-4 border-b border-app-border flex items-center justify-between sticky top-0 bg-surface">
+          <div>
+            <h2 className="text-base font-semibold text-text-primary">Registrations</h2>
+            {ev && <p className="text-xs text-text-muted">{ev.name}{ev.publicSlug ? ` · /e/${ev.publicSlug}` : ""}</p>}
+          </div>
+          <button onClick={onClose} className="text-text-muted hover:text-text-primary text-xl leading-none">×</button>
+        </div>
+        <div className="p-6">
+          {loading || !data ? (
+            <p className="text-sm text-text-muted text-center py-8">Loading…</p>
+          ) : (
+            <>
+              {isOfficial && (
+                <div className="bg-app-bg border border-app-border rounded-lg p-4 mb-4">
+                  <p className="text-sm text-text-primary font-medium mb-1">Official cost billing</p>
+                  <p className="text-xs text-text-muted mb-3">
+                    {data.activeCount} active registrant(s).
+                    {ev?.variableCostTotal != null && data.officialPerHead != null
+                      ? ` $${Number(ev.variableCostTotal).toFixed(2)} ÷ ${data.activeCount} = $${data.officialPerHead.toFixed(2)} each.`
+                      : " Set the official total on the event first."}
+                    {ev?.variableCostBilledAt ? ` Last billed ${new Date(ev.variableCostBilledAt).toLocaleString()}.` : ""}
+                  </p>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => billRegistrants(false)}
+                      disabled={billing || !ev?.variableCostTotal}
+                      className="text-xs px-3 py-1.5 bg-brand text-white rounded-lg hover:bg-brand-hover disabled:opacity-50"
+                    >
+                      {billing ? "Billing…" : ev?.variableCostBilledAt ? "Bill again" : "Bill registrants"}
+                    </button>
+                    {ev?.variableCostBilledAt && (
+                      <button
+                        onClick={() => billRegistrants(true)}
+                        disabled={billing}
+                        className="text-xs px-3 py-1.5 border border-app-border rounded-lg text-text-primary hover:bg-app-bg disabled:opacity-50"
+                      >
+                        Re-bill unpaid
+                      </button>
+                    )}
+                  </div>
+                  {msg && <p className="text-xs text-text-muted mt-2">{msg}</p>}
+                </div>
+              )}
+
+              {data.registrations.length === 0 ? (
+                <p className="text-sm text-text-muted text-center py-8">No registrations yet.</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-[11px] uppercase tracking-wider text-text-muted border-b border-app-border">
+                        <th className="pb-2 font-medium">Name</th>
+                        <th className="pb-2 font-medium">Contact</th>
+                        {customFields.map((f) => <th key={f.id} className="pb-2 font-medium">{f.label}</th>)}
+                        <th className="pb-2 font-medium">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.registrations.map((r) => (
+                        <tr key={r.id} className="border-b border-app-border last:border-0 align-top">
+                          <td className="py-2.5">
+                            <p className="text-text-primary font-medium">{r.name}</p>
+                            {r.member && <p className="text-[10px] text-brand">Member</p>}
+                          </td>
+                          <td className="py-2.5 text-text-muted text-xs">
+                            <p>{r.email}</p>
+                            {r.phone && <p>{r.phone}</p>}
+                          </td>
+                          {customFields.map((f) => (
+                            <td key={f.id} className="py-2.5 text-text-primary text-xs">
+                              {typeof r.formResponses?.[f.id] === "boolean"
+                                ? (r.formResponses[f.id] ? "Yes" : "No")
+                                : (r.formResponses?.[f.id] as string) || "—"}
+                            </td>
+                          ))}
+                          <td className="py-2.5">
+                            {r.status === "PAID" ? (
+                              <span className="text-[10px] px-2 py-0.5 rounded-full bg-green-50 text-green-700 font-medium">Paid{r.amountPaid ? ` $${Number(r.amountPaid).toFixed(2)}` : ""}</span>
+                            ) : r.status === "CANCELED" ? (
+                              <span className="text-[10px] px-2 py-0.5 rounded-full bg-app-bg text-text-muted">Canceled</span>
+                            ) : (
+                              <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 font-medium">
+                                {r.amountDue ? `Owes $${Number(r.amountDue).toFixed(2)}` : "Registered"}
+                              </span>
+                            )}
+                            {r.paymentUrl && r.status !== "PAID" && (
+                              <a href={r.paymentUrl} target="_blank" rel="noreferrer" className="block text-[10px] text-brand hover:underline mt-1">Payment link</a>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               )}
             </>

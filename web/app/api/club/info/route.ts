@@ -25,6 +25,8 @@ export async function GET() {
       socialLinks: true,
       hoursOfOperation: true,
       tier: true,
+      subscriptionStatus: true,
+      stripeSubscriptionId: true,
       stripeOnboardingComplete: true,
       stripeChargesEnabled: true,
       notificationPrefs: true,

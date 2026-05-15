@@ -44,3 +44,7 @@ next-env.d.ts
 
 .env
 .env.local
+
+# Private file storage — uploads go here and are served via /api/files/[id]
+/storage
+/public/uploads

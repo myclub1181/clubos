@@ -10,8 +10,8 @@ export const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
 
 export function platformFeeBps(tier: string): number {
   switch (tier) {
-    case "starter": return 250;
-    case "growth": return 125;
+    case "starter": return 250;   // 2.5%
+    case "growth": return 0;      // Flat $50/mo, no per-transaction cut
     case "pro": return 0;
     case "enterprise": return 0;
     default: return 250;

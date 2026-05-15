@@ -12,6 +12,7 @@ type Doc = {
   unpublishAt: string | null;
   expiresAt: string | null;
   requiresGuardianSignature: boolean;
+  signatureValidForDays: number | null;
   deliveryTrigger: string;
   createdAt: string;
   updatedAt: string;
@@ -38,6 +39,7 @@ export default function DocumentsPage() {
   const [showAdd, setShowAdd] = useState(false);
   const [editing, setEditing] = useState<Doc | null>(null);
   const [viewing, setViewing] = useState<Doc | null>(null);
+  const [signaturesFor, setSignaturesFor] = useState<Doc | null>(null);
 
   async function load() {
     setLoading(true);
@@ -144,6 +146,12 @@ export default function DocumentsPage() {
                       View
                     </button>
                     <button
+                      onClick={() => setSignaturesFor(d)}
+                      className="text-xs text-text-muted hover:text-text-primary px-2 py-1 rounded hover:bg-app-bg"
+                    >
+                      Signatures
+                    </button>
+                    <button
                       onClick={() => setEditing(d)}
                       className="text-xs text-text-muted hover:text-text-primary px-2 py-1 rounded hover:bg-app-bg"
                     >
@@ -174,6 +182,124 @@ export default function DocumentsPage() {
       {viewing && (
         <DocumentViewer doc={viewing} onClose={() => setViewing(null)} />
       )}
+
+      {signaturesFor && (
+        <SignaturesModal doc={signaturesFor} onClose={() => setSignaturesFor(null)} />
+      )}
+    </div>
+  );
+}
+
+type SignatureRow = {
+  id: string;
+  signerName: string;
+  relationship: string;
+  signedAt: string;
+  ipAddress: string | null;
+  member: { id: string; firstName: string; lastName: string; isMinor: boolean; email: string | null };
+};
+
+type SignaturesResponse = {
+  document: { signatureValidForDays: number | null };
+  signatures: SignatureRow[];
+};
+
+function SignaturesModal({ doc, onClose }: { doc: Doc; onClose: () => void }) {
+  const [signatures, setSignatures] = useState<SignatureRow[]>([]);
+  const [validForDays, setValidForDays] = useState<number | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch(`/api/documents/${doc.id}/signatures`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: SignaturesResponse | null) => {
+        setSignatures(d?.signatures ?? []);
+        setValidForDays(d?.document.signatureValidForDays ?? null);
+        setLoading(false);
+      });
+  }, [doc.id]);
+
+  function expiry(signedAt: string): { date: Date | null; expired: boolean } {
+    if (!validForDays) return { date: null, expired: false };
+    const d = new Date(signedAt);
+    d.setDate(d.getDate() + validForDays);
+    return { date: d, expired: d < new Date() };
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+      <div className="bg-surface rounded-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto border border-app-border">
+        <div className="px-6 py-4 border-b border-app-border flex items-center justify-between sticky top-0 bg-surface">
+          <div>
+            <h2 className="text-base font-semibold text-text-primary">Signatures</h2>
+            <p className="text-xs text-text-muted">
+              {doc.title}
+              {validForDays && ` · re-signature required every ${validForDays === 365 ? "year" : `${validForDays} days`}`}
+            </p>
+          </div>
+          <button onClick={onClose} className="text-text-muted hover:text-text-primary text-xl leading-none">×</button>
+        </div>
+        <div className="p-6">
+          {loading ? (
+            <p className="text-sm text-text-muted text-center py-8">Loading…</p>
+          ) : signatures.length === 0 ? (
+            <p className="text-sm text-text-muted text-center py-8">
+              No one has signed this document yet.
+            </p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-xs uppercase tracking-wider text-text-muted border-b border-app-border">
+                  <th className="pb-2 font-medium">Member</th>
+                  <th className="pb-2 font-medium">Signed by</th>
+                  <th className="pb-2 font-medium">Date</th>
+                </tr>
+              </thead>
+              <tbody>
+                {signatures.map((s) => (
+                  <tr key={s.id} className="border-b border-app-border last:border-0">
+                    <td className="py-2.5">
+                      <p className="font-medium text-text-primary">
+                        {s.member.firstName} {s.member.lastName}
+                        {s.member.isMinor && (
+                          <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-700">minor</span>
+                        )}
+                      </p>
+                      {s.member.email && (
+                        <p className="text-xs text-text-muted">{s.member.email}</p>
+                      )}
+                    </td>
+                    <td className="py-2.5">
+                      <p className="text-text-primary">{s.signerName}</p>
+                      <p className="text-xs text-text-muted">
+                        {s.relationship === "GUARDIAN" ? "Guardian" : "Self"}
+                      </p>
+                    </td>
+                    <td className="py-2.5 text-text-muted">
+                      {new Date(s.signedAt).toLocaleString("en-US", {
+                        month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit",
+                      })}
+                      {(() => {
+                        const e = expiry(s.signedAt);
+                        if (!e.date) return null;
+                        return (
+                          <p className={`text-[10px] ${e.expired ? "text-red-600" : "text-text-muted/70"}`}>
+                            {e.expired ? "Expired " : "Valid until "}
+                            {e.date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                          </p>
+                        );
+                      })()}
+                      {s.ipAddress && (
+                        <p className="text-[10px] text-text-muted/70">IP: {s.ipAddress}</p>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -335,6 +461,9 @@ function DocumentModal({
   const [requiresGuardianSignature, setRequiresGuardianSignature] = useState(doc?.requiresGuardianSignature || false);
   const [deliveryTrigger, setDeliveryTrigger] = useState(doc?.deliveryTrigger || "MANUAL");
   const [expiresAt, setExpiresAt] = useState(doc?.expiresAt ? doc.expiresAt.split("T")[0] : "");
+  const [signatureFrequency, setSignatureFrequency] = useState<string>(
+    doc?.signatureValidForDays ? String(doc.signatureValidForDays) : "0"
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -357,6 +486,7 @@ function DocumentModal({
         requiresGuardianSignature,
         deliveryTrigger,
         expiresAt: expiresAt || null,
+        signatureValidForDays: signatureFrequency === "0" ? null : parseInt(signatureFrequency, 10),
       }),
     });
 
@@ -428,15 +558,34 @@ function DocumentModal({
               </select>
             </div>
             <div>
-              <label className="block text-sm font-medium text-text-primary mb-1">Expires (optional)</label>
+              <label className="block text-sm font-medium text-text-primary mb-1">Document expires on</label>
               <input
                 type="date"
                 value={expiresAt}
                 onChange={(e) => setExpiresAt(e.target.value)}
                 className="w-full px-3 py-2 border border-app-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand"
               />
-              <p className="text-[10px] text-text-muted mt-1">Member must re-sign after this date</p>
+              <p className="text-[10px] text-text-muted mt-1">Hides the document from members after this date</p>
             </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-text-primary mb-1">Signature renewal frequency</label>
+            <select
+              value={signatureFrequency}
+              onChange={(e) => setSignatureFrequency(e.target.value)}
+              className="w-full px-3 py-2 border border-app-border rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-brand"
+            >
+              <option value="0">Once — no renewal needed</option>
+              <option value="30">Every 30 days</option>
+              <option value="90">Every 90 days (quarterly)</option>
+              <option value="180">Every 180 days (semi-annual)</option>
+              <option value="365">Every year</option>
+              <option value="730">Every 2 years</option>
+            </select>
+            <p className="text-[10px] text-text-muted mt-1">
+              How often members must re-sign. Existing signatures expire after this period and members are prompted to re-sign.
+            </p>
           </div>
 
           <div className="space-y-2 pt-1">

@@ -22,19 +22,20 @@ const tiers = [
   },
   {
     name: "Growth",
-    price: 49,
-    fee: "1.25%",
-    desc: "For growing clubs ready to scale.",
+    price: 50,
+    fee: "0%",
+    desc: "Skip the transaction fees — perfect for single-location clubs.",
     cta: "Start Growth",
     href: "/signup",
     featured: true,
     highlights: [
       "Unlimited members",
-      "Up to 3 locations",
+      "0% transaction fees",
       "Reports & analytics",
       "Plaid bank reconciliation",
       "Discount codes & coupons",
       "Document signatures",
+      "Single location only",
     ],
   },
   {
@@ -74,8 +75,8 @@ const tiers = [
 
 const compareRows = [
   { label: "Members",                values: ["150",      "Unlimited", "Unlimited", "Unlimited"] },
-  { label: "Locations",              values: ["1",        "3",         "5",         "Unlimited"] },
-  { label: "Transaction fee",        values: ["2.5%",     "1.25%",     "0%",        "0%"] },
+  { label: "Locations",              values: ["1",        "1",         "5",         "Unlimited"] },
+  { label: "Transaction fee",        values: ["2.5%",     "0%",        "0%",        "0%"] },
   { label: "Stripe Connect payouts", values: ["✓",        "✓",         "✓",         "✓"] },
   { label: "Classes & events",       values: ["✓",        "✓",         "✓",         "✓"] },
   { label: "Memberships & billing",  values: ["✓",        "✓",         "✓",         "✓"] },
@@ -94,7 +95,7 @@ const compareRows = [
 const faqs = [
   {
     q: "How does the transaction fee work?",
-    a: "Stripe charges its standard processing fee (2.9% + $0.30) on every payment. AthletixOS adds a small platform fee on top — that's the % shown next to each plan. Pro and Enterprise plans pay 0% on top of Stripe. Payouts go directly to your bank, not through us.",
+    a: "Stripe charges its standard processing fee (2.9% + $0.30) on every payment. AthletixOS adds a 2.5% platform fee on Starter; Growth, Pro, and Enterprise pay 0% on top of Stripe. Payouts go directly to your bank, not through us.",
   },
   {
     q: "Can I switch plans later?",
