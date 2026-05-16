@@ -20,6 +20,8 @@ const schema = z.object({
   name: z.string().min(1),
   address: z.string().optional().nullable(),
   phone: z.string().optional().nullable(),
+  latitude: z.number().min(-90).max(90).optional().nullable(),
+  longitude: z.number().min(-180).max(180).optional().nullable(),
 });
 
 export async function POST(req: Request) {
@@ -58,6 +60,8 @@ export async function POST(req: Request) {
         clubId: session.user.clubId,
         name: data.name,
         address: data.address || null,
+        latitude: data.latitude ?? null,
+        longitude: data.longitude ?? null,
       },
     });
     return NextResponse.json(location, { status: 201 });

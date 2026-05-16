@@ -18,7 +18,7 @@ type PublicEvent = {
   startsAt: string;
   endsAt: string;
   imageUrl: string | null;
-  location: { name: string; address: string | null } | null;
+  location: { name: string; address: string | null; latitude: number | null; longitude: number | null } | null;
   club: { name: string; logoUrl: string | null; primaryColor: string | null };
   isTournament: boolean;
   tournamentMode: string | null;
@@ -153,6 +153,20 @@ export default function PublicEventPage() {
           {event.location && (
             <p className="text-sm text-stone-500 mt-0.5">
               📍 {event.location.name}{event.location.address ? ` · ${event.location.address}` : ""}
+              {event.location.latitude != null && event.location.longitude != null && (
+                <>
+                  {" · "}
+                  <a
+                    href={`https://www.google.com/maps/dir/?api=1&destination=${event.location.latitude},${event.location.longitude}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="underline"
+                    style={{ color: event.club.primaryColor ?? undefined }}
+                  >
+                    Directions
+                  </a>
+                </>
+              )}
             </p>
           )}
           {event.description && (

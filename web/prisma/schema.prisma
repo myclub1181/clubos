@@ -117,6 +117,8 @@ model Club {
   recurringClasses            RecurringClass[]
   classSessions               ClassSession[]
   attendanceRecords           AttendanceRecord[]
+  memberRelationships         MemberRelationship[]
+  staffCompensations          StaffCompensation[]
 
   @@index([slug])
   @@map("clubs")
@@ -127,6 +129,9 @@ model Location {
   clubId    String
   name      String
   address   String?
+  // GPS coordinates so member-facing surfaces can deep-link to Apple/Google Maps.
+  latitude  Float?
+  longitude Float?
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
   deletedAt DateTime?
@@ -174,6 +179,7 @@ model User {
   attendanceAdded         AttendanceRecord[]           @relation("AttendanceAddedBy")
   documentSignatures      DocumentSignature[]
   uploadedFiles           UploadedFile[]
+  compensation            StaffCompensation?
 
   @@unique([clubId, email])
   @@index([clubId])
@@ -188,6 +194,8 @@ model StaffProfile {
   hourlyRate       Decimal? @db.Decimal(10, 2)
   salary           Decimal? @db.Decimal(10, 2)
   appointmentPrice Decimal? @db.Decimal(10, 2)
+  // Flat pay per class session taught (in addition to / instead of hourly).
+  perSessionRate   Decimal? @db.Decimal(10, 2)
   permissions      Json     @default("{}")
   // Member-portal bio + visible contact (only shown when showOnPortal=true)
   bio              String?
@@ -251,11 +259,37 @@ model Member {
   attendanceRecords AttendanceRecord[]
   documentSignatures DocumentSignature[]
   eventRegistrations EventRegistration[]
+  relationshipsFrom  MemberRelationship[] @relation("RelationshipFrom")
+  relationshipsTo    MemberRelationship[] @relation("RelationshipTo")
 
   @@index([clubId])
   @@index([status])
   @@index([guardianId])
   @@map("members")
+}
+
+// A relationship between two members (siblings, cousins, friends, teammates,
+// etc). Stored once per pair (memberId < relatedMemberId by convention is NOT
+// enforced — the API writes one row and reads both directions). Distinct from
+// Guardian/MemberGuardianUser which model legal guardianship + portal access.
+model MemberRelationship {
+  id              String   @id @default(cuid())
+  clubId          String
+  memberId        String
+  relatedMemberId String
+  type            String   // SIBLING | COUSIN | FRIEND | TEAMMATE | PARENT | CHILD | SPOUSE | OTHER
+  note            String?
+  createdAt       DateTime @default(now())
+
+  club    Club   @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  member  Member @relation("RelationshipFrom", fields: [memberId], references: [id], onDelete: Cascade)
+  related Member @relation("RelationshipTo", fields: [relatedMemberId], references: [id], onDelete: Cascade)
+
+  @@unique([memberId, relatedMemberId])
+  @@index([clubId])
+  @@index([memberId])
+  @@index([relatedMemberId])
+  @@map("member_relationships")
 }
 
 model MemberSubscription {
@@ -473,6 +507,9 @@ model Event {
   variableCostMode            String?   // ESTIMATED | OFFICIAL
   variableCostTotal           Decimal?  @db.Decimal(10, 2)
   variableCostEstimatedSignups Int?
+  // Shown to parents as a "roughly $X each" estimate even in OFFICIAL mode,
+  // before the official total is known. Display-only; never billed.
+  variableCostEstimatedTotal  Decimal?  @db.Decimal(10, 2)
   variableCostBilledAt        DateTime?
 
   createdAt              DateTime  @default(now())
@@ -1120,6 +1157,64 @@ model PrivateLessonPayRate {
   @@unique([userId, lessonTypeId])
   @@index([clubId])
   @@map("private_lesson_pay_rates")
+}
+
+// ── Modular compensation builder ──────────────────────────────────────────────
+// One plan per staff member. Replaces the flat StaffProfile rate fields as the
+// authoritative source for payroll. A plan has exactly one base component plus
+// any number of stackable bonuses. Assignment rules scope which classes/events/
+// memberships/private-lesson-types a component applies to (bonusId null = the
+// base component; bonusId set = that bonus). No assignments for a component =
+// applies club-wide.
+model StaffCompensation {
+  id         String   @id @default(cuid())
+  clubId     String
+  userId     String   @unique
+  baseType   String   @default("HOURLY") // SALARY | PER_CLASS | HOURLY
+  baseAmount Decimal   @default(0) @db.Decimal(10, 2)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  club        Club                     @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  user        User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bonuses     CompensationBonus[]
+  assignments CompensationAssignment[]
+
+  @@index([clubId])
+  @@map("staff_compensations")
+}
+
+model CompensationBonus {
+  id             String   @id @default(cuid())
+  compensationId String
+  // ATTENDANCE   → `amount` $ per athlete attendance on assigned scope
+  // SIGNUP       → `amount` $ per athlete who joins/purchases assigned scope
+  // REVENUE_SHARE→ `amount` is a percentage (0-100) of revenue from assigned scope
+  bonusType      String
+  amount         Decimal  @db.Decimal(10, 2)
+  createdAt      DateTime @default(now())
+
+  compensation StaffCompensation        @relation(fields: [compensationId], references: [id], onDelete: Cascade)
+  assignments  CompensationAssignment[]
+
+  @@index([compensationId])
+  @@map("compensation_bonuses")
+}
+
+model CompensationAssignment {
+  id             String  @id @default(cuid())
+  compensationId String
+  bonusId        String? // null = scopes the base component; set = scopes that bonus
+  scopeType      String  // CLASS | EVENT | MEMBERSHIP | PRIVATE_LESSON_TYPE
+  scopeId        String  // RecurringClass / Event / Membership / PrivateLessonType id
+
+  compensation StaffCompensation  @relation(fields: [compensationId], references: [id], onDelete: Cascade)
+  bonus        CompensationBonus? @relation(fields: [bonusId], references: [id], onDelete: Cascade)
+
+  @@index([compensationId])
+  @@index([bonusId])
+  @@index([scopeType, scopeId])
+  @@map("compensation_assignments")
 }
 
 // ── Recurring Classes ─────────────────────────────────────────────────────────

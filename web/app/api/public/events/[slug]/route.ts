@@ -28,11 +28,12 @@ export async function GET(_req: Request, context: { params: Promise<{ slug: stri
       variableCostMode: true,
       variableCostTotal: true,
       variableCostEstimatedSignups: true,
+      variableCostEstimatedTotal: true,
       publishAt: true,
       unpublishAt: true,
       deletedAt: true,
       registrationDeadline: true,
-      location: { select: { name: true, address: true } },
+      location: { select: { name: true, address: true, latitude: true, longitude: true } },
       club: { select: { name: true, logoUrl: true, primaryColor: true } },
       _count: { select: { registrations: true, bookings: true } },
     },
@@ -71,7 +72,11 @@ export async function GET(_req: Request, context: { params: Promise<{ slug: stri
     event.variableCostEnabled &&
     event.variableCostMode === "OFFICIAL"
   ) {
-    priceLabel = "Cost billed after the tournament";
+    if (event.variableCostEstimatedTotal && Number(event.variableCostEstimatedTotal) > 0) {
+      priceLabel = `Billed after the tournament — estimated ~$${Number(event.variableCostEstimatedTotal).toFixed(2)} total, split across attendees`;
+    } else {
+      priceLabel = "Cost billed after the tournament";
+    }
   }
 
   const capacityReached =

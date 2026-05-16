@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import StripeRequiredBanner from "@/components/StripeRequiredBanner";
 import ImageUpload from "@/components/ImageUpload";
 import ExportMenu from "@/components/ExportMenu";
@@ -150,6 +151,7 @@ export default function MembersPage() {
   const [customFieldFilter, setCustomFieldFilter] = useState("");
   const [customFieldValue, setCustomFieldValue] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkMessaging, setBulkMessaging] = useState(false);
   const [formConfig, setFormConfig] = useState<MemberFormConfig>(DEFAULT_MEMBER_FORM_CONFIG);
   const [formCustomized, setFormCustomized] = useState<boolean>(false);
 
@@ -220,6 +222,18 @@ export default function MembersPage() {
     if (!confirm("Remove this member?")) return;
     const res = await fetch(`/api/members/${id}`, { method: "DELETE" });
     if (res.ok) load();
+  }
+
+  async function bulkDelete() {
+    const n = selectedIds.size;
+    if (!confirm(`Remove ${n} member${n === 1 ? "" : "s"}? This can't be undone from here.`)) return;
+    const res = await fetch("/api/members/bulk", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "delete", memberIds: Array.from(selectedIds) }),
+    });
+    if (res.ok) { setSelectedIds(new Set()); load(); }
+    else alert("Bulk delete failed");
   }
 
   async function acceptDefaults() {
@@ -335,6 +349,18 @@ export default function MembersPage() {
           >
             Export selected
           </a>
+          <button
+            onClick={() => setBulkMessaging(true)}
+            className="text-sm px-3 py-1.5 rounded-md bg-surface border border-app-border text-text-primary hover:bg-app-bg"
+          >
+            Message selected
+          </button>
+          <button
+            onClick={bulkDelete}
+            className="text-sm px-3 py-1.5 rounded-md bg-surface border border-red-200 text-red-600 hover:bg-red-50"
+          >
+            Delete selected
+          </button>
           <button onClick={() => setSelectedIds(new Set())} className="text-sm text-text-muted hover:text-text-primary">Clear</button>
         </div>
       )}
@@ -398,7 +424,9 @@ export default function MembersPage() {
                           }
                         </div>
                         <div>
-                          <div className="text-sm font-medium text-text-primary">{m.firstName} {m.lastName}</div>
+                          <Link href={`/dashboard/members/${m.id}`} className="text-sm font-medium text-text-primary hover:underline">
+                            {m.firstName} {m.lastName}
+                          </Link>
                           {m.email && <div className="text-xs text-text-muted">{m.email}</div>}
                           {m.isMinor && (
                             <div className="text-xs text-text-muted flex items-center gap-1">
@@ -457,6 +485,78 @@ export default function MembersPage() {
   {subscribing && <PurchaseMembershipModal member={subscribing} onClose={() => setSubscribing(null)} />}
 
       {showImport && <ImportCSVModal customFields={customFields} formConfig={formConfig} onClose={() => setShowImport(false)} onImported={() => { setShowImport(false); load(); }} />}
+
+      {bulkMessaging && (
+        <BulkMessageModal
+          memberIds={Array.from(selectedIds)}
+          onClose={() => setBulkMessaging(false)}
+          onSent={() => { setBulkMessaging(false); setSelectedIds(new Set()); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function BulkMessageModal({ memberIds, onClose, onSent }: { memberIds: string[]; onClose: () => void; onSent: () => void }) {
+  const [body, setBody] = useState("");
+  const [sending, setSending] = useState(false);
+  const [result, setResult] = useState<{ sent: number; skipped: { reason: string }[] } | null>(null);
+  const [error, setError] = useState("");
+
+  async function send() {
+    if (!body.trim()) { setError("Write a message first."); return; }
+    setSending(true);
+    setError("");
+    const res = await fetch("/api/members/bulk", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "message", memberIds, body: body.trim() }),
+    });
+    setSending(false);
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) { setError(typeof d.error === "string" ? d.error : "Send failed"); return; }
+    setResult({ sent: d.sent ?? 0, skipped: d.skipped ?? [] });
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+      <div className="bg-surface rounded-xl w-full max-w-md border border-app-border">
+        <div className="px-6 py-4 border-b border-app-border flex items-center justify-between">
+          <h2 className="text-base font-semibold text-text-primary">Message {memberIds.length} member{memberIds.length === 1 ? "" : "s"}</h2>
+          <button onClick={onClose} className="text-text-muted hover:text-text-primary text-xl leading-none">×</button>
+        </div>
+        <div className="p-6 space-y-4">
+          {result ? (
+            <>
+              <p className="text-sm text-text-primary">
+                Sent to {result.sent} member{result.sent === 1 ? "" : "s"}.
+                {result.skipped.length > 0 && ` ${result.skipped.length} skipped (no linked portal account).`}
+              </p>
+              <button onClick={onSent} className="w-full px-4 py-2 bg-brand text-white rounded-lg text-sm font-medium hover:bg-brand-hover">Done</button>
+            </>
+          ) : (
+            <>
+              <p className="text-xs text-text-muted">
+                Sends a direct message to each selected member (and the guardian for minors). Members without a portal account are skipped.
+              </p>
+              <textarea
+                value={body}
+                onChange={(e) => setBody(e.target.value)}
+                rows={5}
+                placeholder="Your message…"
+                className="w-full px-3 py-2 border border-app-border rounded-lg text-sm bg-surface resize-none"
+              />
+              {error && <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</div>}
+              <div className="flex gap-2">
+                <button onClick={onClose} className="flex-1 px-4 py-2 border border-app-border text-text-primary rounded-lg text-sm hover:bg-app-bg">Cancel</button>
+                <button onClick={send} disabled={sending} className="flex-1 px-4 py-2 bg-brand text-white rounded-lg text-sm font-medium hover:bg-brand-hover disabled:opacity-50">
+                  {sending ? "Sending…" : "Send"}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

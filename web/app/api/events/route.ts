@@ -78,6 +78,7 @@ const eventFields = {
   variableCostMode: z.enum(["ESTIMATED", "OFFICIAL"]).optional().nullable(),
   variableCostTotal: z.number().min(0).optional().nullable(),
   variableCostEstimatedSignups: z.number().int().positive().optional().nullable(),
+  variableCostEstimatedTotal: z.number().min(0).optional().nullable(),
 };
 
 const createSchema = z.object({
@@ -169,6 +170,9 @@ export async function POST(req: Request) {
         variableCostTotal: data.variableCostEnabled ? (data.variableCostTotal ?? null) : null,
         variableCostEstimatedSignups: data.variableCostEnabled
           ? (data.variableCostEstimatedSignups ?? null)
+          : null,
+        variableCostEstimatedTotal: data.variableCostEnabled
+          ? (data.variableCostEstimatedTotal ?? null)
           : null,
         sessions: data.sessions?.length
           ? {

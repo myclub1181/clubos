@@ -12,16 +12,32 @@ type Club = {
   primaryColor: string | null;
   logoUrl: string | null;
   tier: string;
+  subscriptionStatus: string | null;
+  stripeSubscriptionId: string | null;
   stripeOnboardingComplete: boolean;
   stripeChargesEnabled: boolean;
   notificationPrefs: Record<string, boolean>;
+};
+
+const SUB_STATUS_LABEL: Record<string, { label: string; bg: string; fg: string }> = {
+  active:   { label: "Active",   bg: "var(--color-success)", fg: "var(--color-text)" },
+  trialing: { label: "Trialing", bg: "var(--color-success)", fg: "var(--color-text)" },
+  past_due: { label: "Past due", bg: "var(--color-warning)", fg: "#fff" },
+  canceled: { label: "Canceled", bg: "var(--color-bg)",      fg: "var(--color-muted)" },
 };
 
 type Location = {
   id: string;
   name: string;
   address: string | null;
+  latitude: number | null;
+  longitude: number | null;
 };
+
+function mapsUrl(lat: number, lng: number) {
+  // Universal: works in browsers and prompts Apple Maps on iOS / Google on Android.
+  return `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`;
+}
 
 const TIERS = [
   {
@@ -367,16 +383,47 @@ function PlanSection({ club, onSaved }: { club: Club; onSaved: () => void }) {
         <div className="flex items-start justify-between mb-4">
           <div>
             <p className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-1">Current Plan</p>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <h2 className="text-2xl font-semibold text-text-primary">{currentTier.name}</h2>
               <span className="text-sm font-medium px-2 py-0.5 rounded-full" style={{ background: currentTier.color + "22", color: currentTier.color }}>
                 {currentTier.price}
               </span>
+              {club.subscriptionStatus && SUB_STATUS_LABEL[club.subscriptionStatus] && (
+                <span
+                  className="text-xs font-medium px-2 py-0.5 rounded-full"
+                  style={{
+                    background: SUB_STATUS_LABEL[club.subscriptionStatus].bg,
+                    color: SUB_STATUS_LABEL[club.subscriptionStatus].fg,
+                  }}
+                >
+                  {SUB_STATUS_LABEL[club.subscriptionStatus].label}
+                </span>
+              )}
             </div>
             <p className="text-xs text-text-muted mt-0.5">{currentTier.fee}</p>
+            <p className="text-xs text-text-muted mt-1">
+              Billing is managed in Stripe — changes here and on the{" "}
+              <Link href="/dashboard/settings/billing" className="underline">Payments &amp; billing</Link>{" "}
+              page always reflect your live Stripe subscription.
+            </p>
           </div>
-          <div className="w-10 h-10 rounded-full flex items-center justify-center text-lg font-bold" style={{ background: currentTier.color + "22", color: currentTier.color }}>
-            {currentTier.name[0]}
+          <div className="flex flex-col items-end gap-2">
+            <div className="w-10 h-10 rounded-full flex items-center justify-center text-lg font-bold" style={{ background: currentTier.color + "22", color: currentTier.color }}>
+              {currentTier.name[0]}
+            </div>
+            {club.stripeSubscriptionId && (
+              <button
+                onClick={async () => {
+                  const res = await fetch("/api/club/subscription/portal", { method: "POST" });
+                  const d = await res.json().catch(() => ({}));
+                  if (res.ok && d.url) window.location.href = d.url;
+                  else setPromoError(typeof d.error === "string" ? d.error : "Could not open billing portal");
+                }}
+                className="text-xs px-3 py-1.5 border border-app-border rounded-lg text-text-primary hover:bg-app-bg whitespace-nowrap"
+              >
+                Manage in Stripe →
+              </button>
+            )}
           </div>
         </div>
         <ul className="space-y-1.5">
@@ -510,6 +557,16 @@ function LocationsSection({ locations, onSaved }: { locations: Location[]; onSav
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-text-primary">{loc.name}</p>
                 {loc.address && <p className="text-xs text-text-muted">{loc.address}</p>}
+                {loc.latitude != null && loc.longitude != null && (
+                  <a
+                    href={mapsUrl(loc.latitude, loc.longitude)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-brand hover:underline"
+                  >
+                    📍 Open in Maps
+                  </a>
+                )}
               </div>
               <div className="flex gap-1">
                 <button onClick={() => setEditing(loc)}
@@ -549,18 +606,30 @@ function LocationModal({
   const isEdit = !!location;
   const [name, setName] = useState(location?.name || "");
   const [address, setAddress] = useState(location?.address || "");
+  const [latitude, setLatitude] = useState(location?.latitude != null ? String(location.latitude) : "");
+  const [longitude, setLongitude] = useState(location?.longitude != null ? String(location.longitude) : "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    const lat = latitude.trim() ? Number(latitude) : null;
+    const lng = longitude.trim() ? Number(longitude) : null;
+    if ((lat != null && Number.isNaN(lat)) || (lng != null && Number.isNaN(lng))) {
+      setError("Latitude and longitude must be numbers.");
+      return;
+    }
+    if ((lat == null) !== (lng == null)) {
+      setError("Enter both latitude and longitude, or leave both blank.");
+      return;
+    }
     setSaving(true);
     const url = isEdit ? `/api/club/locations/${location!.id}` : "/api/club/locations";
     const method = isEdit ? "PATCH" : "POST";
     const res = await fetch(url, {
       method,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, address: address || null }),
+      body: JSON.stringify({ name, address: address || null, latitude: lat, longitude: lng }),
     });
     setSaving(false);
     if (!res.ok) {
@@ -590,6 +659,32 @@ function LocationModal({
             <input type="text" value={address} onChange={(e) => setAddress(e.target.value)}
               placeholder="123 Main St, City, State"
               className="w-full px-3 py-2 border border-app-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-text-primary mb-1">
+              GPS coordinates (optional)
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <input type="text" inputMode="decimal" value={latitude} onChange={(e) => setLatitude(e.target.value)}
+                placeholder="Latitude e.g. 40.7128"
+                className="w-full px-3 py-2 border border-app-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand" />
+              <input type="text" inputMode="decimal" value={longitude} onChange={(e) => setLongitude(e.target.value)}
+                placeholder="Longitude e.g. -74.0060"
+                className="w-full px-3 py-2 border border-app-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand" />
+            </div>
+            <p className="text-[11px] text-text-muted mt-1">
+              Adds an &quot;Open in Maps&quot; link (Apple/Google) for members. Tip: right-click a spot in Google Maps to copy its lat, long.
+            </p>
+            {latitude.trim() && longitude.trim() && !Number.isNaN(Number(latitude)) && !Number.isNaN(Number(longitude)) && (
+              <a
+                href={mapsUrl(Number(latitude), Number(longitude))}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs text-brand hover:underline mt-1 inline-block"
+              >
+                Preview on map →
+              </a>
+            )}
           </div>
           {error && <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</div>}
           <div className="flex gap-2">

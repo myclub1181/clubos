@@ -8,6 +8,7 @@ type Kind = "event" | "class" | "private";
 type CalItem = {
   kind: Kind;
   id: string;
+  refId: string;
   name: string;
   startsAt: string;
   endsAt: string;
@@ -323,9 +324,17 @@ export default function CalendarPage() {
             </div>
             <button onClick={() => setSelected(null)} className="text-text-muted hover:text-text-primary text-xl leading-none">×</button>
           </div>
+          {selected.kind === "event" && <EventDetails eventId={selected.refId} />}
+
           <div className="mt-3 flex gap-2">
             <Link
-              href={KIND_COLORS[selected.kind].href}
+              href={
+                selected.kind === "class"
+                  ? "/dashboard/classes"
+                  : selected.kind === "private"
+                  ? "/dashboard/privates"
+                  : "/dashboard/events"
+              }
               className="text-xs px-3 py-1.5 rounded-md border border-app-border text-text-primary hover:bg-app-bg"
             >
               Open in {KIND_COLORS[selected.kind].label} →
@@ -333,6 +342,124 @@ export default function CalendarPage() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+type FullEvent = {
+  id: string;
+  name: string;
+  description: string | null;
+  type: string;
+  startsAt: string;
+  endsAt: string;
+  capacity: number | null;
+  memberPrice: string | null;
+  nonMemberPrice: string | null;
+  dropInFee: string | null;
+  visibility: string;
+  isTournament: boolean;
+  tournamentMode: string | null;
+  publicRegistration: boolean;
+  publicSlug: string | null;
+  variableCostEnabled: boolean;
+  variableCostMode: string | null;
+  variableCostTotal: string | null;
+  variableCostEstimatedTotal: string | null;
+  location: { name: string; address: string | null } | null;
+  sessions: { id: string; name: string | null; startsAt: string; endsAt: string }[];
+  staffAssignments: { user: { id: string; firstName: string; lastName: string } }[];
+  registrations: { id: string; name: string; status: string }[];
+  bookings: { id: string; member: { firstName: string; lastName: string } | null }[];
+};
+
+function money(v: string | null) {
+  return v == null ? null : Number(v).toLocaleString("en-US", { style: "currency", currency: "USD" });
+}
+
+function EventDetails({ eventId }: { eventId: string }) {
+  const [ev, setEv] = useState<FullEvent | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    fetch(`/api/events/${eventId}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { setEv(d); setLoading(false); });
+  }, [eventId]);
+
+  if (loading) return <div className="mt-3 text-xs text-text-muted">Loading details…</div>;
+  if (!ev) return null;
+
+  const prices = [
+    ev.memberPrice && `Member ${money(ev.memberPrice)}`,
+    ev.nonMemberPrice && `Non-member ${money(ev.nonMemberPrice)}`,
+    ev.dropInFee && `Drop-in ${money(ev.dropInFee)}`,
+  ].filter(Boolean);
+
+  return (
+    <div className="mt-3 pt-3 border-t border-app-border space-y-2 text-sm">
+      {ev.description && <p className="text-text-muted whitespace-pre-wrap">{ev.description}</p>}
+      <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs">
+        {ev.location && (
+          <Detail label="Location" value={`${ev.location.name}${ev.location.address ? ` — ${ev.location.address}` : ""}`} />
+        )}
+        <Detail label="Visibility" value={ev.visibility} />
+        {prices.length > 0 && <Detail label="Pricing" value={prices.join(" · ")} />}
+        {ev.capacity != null && <Detail label="Capacity" value={String(ev.capacity)} />}
+        {ev.isTournament && (
+          <Detail label="Tournament" value={ev.tournamentMode === "HOST" ? "Hosting" : ev.tournamentMode === "ATTEND" ? "Attending" : "Yes"} />
+        )}
+        {ev.variableCostEnabled && (
+          <Detail
+            label="Variable cost"
+            value={
+              ev.variableCostMode === "OFFICIAL"
+                ? `Official ${money(ev.variableCostTotal) ?? "TBD"}${ev.variableCostEstimatedTotal ? ` (est. ${money(ev.variableCostEstimatedTotal)})` : ""}`
+                : `Estimated split of ${money(ev.variableCostTotal) ?? "TBD"}`
+            }
+          />
+        )}
+        {ev.publicRegistration && ev.publicSlug && (
+          <Detail label="Public link" value={`/e/${ev.publicSlug}`} />
+        )}
+      </div>
+
+      {ev.sessions.length > 0 && (
+        <div className="text-xs">
+          <p className="text-text-muted font-medium mb-0.5">Sessions</p>
+          {ev.sessions.map((s) => (
+            <div key={s.id} className="text-text-muted">
+              {s.name ? `${s.name}: ` : ""}
+              {new Date(s.startsAt).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
+              {" – "}
+              {new Date(s.endsAt).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs">
+        {ev.staffAssignments.length > 0 && (
+          <Detail
+            label="Staff"
+            value={ev.staffAssignments.map((a) => `${a.user.firstName} ${a.user.lastName}`).join(", ")}
+          />
+        )}
+        <Detail label="Bookings" value={String(ev.bookings.length)} />
+        {ev.registrations.length > 0 && (
+          <Detail label="Registrations" value={String(ev.registrations.length)} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Detail({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <span className="text-text-muted">{label}: </span>
+      <span className="text-text-primary">{value}</span>
     </div>
   );
 }

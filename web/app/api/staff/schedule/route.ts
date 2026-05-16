@@ -145,5 +145,30 @@ export async function GET(req: Request) {
     };
   });
 
-  return NextResponse.json({ from: from.toISOString(), to: to.toISOString(), staff: result });
+  // All events in range + all active classes, so the schedule UI can offer
+  // "assign to this event/class on this day" — not just show pre-assigned ones.
+  const allEvents = events.map((e) => ({
+    id: e.id,
+    name: e.name,
+    type: e.type,
+    startsAt: e.startsAt.toISOString(),
+    date: e.startsAt.toISOString().slice(0, 10),
+    assignedUserIds: e.staffAssignments.map((a) => a.userId),
+  }));
+  const allClasses = classes.map((c) => ({
+    id: c.id,
+    name: c.name,
+    daysOfWeek: Array.isArray(c.daysOfWeek) ? (c.daysOfWeek as number[]) : [],
+    startTime: c.startTime,
+    endTime: c.endTime,
+    assignedStaffIds: Array.isArray(c.assignedStaffIds) ? (c.assignedStaffIds as string[]) : [],
+  }));
+
+  return NextResponse.json({
+    from: from.toISOString(),
+    to: to.toISOString(),
+    staff: result,
+    allEvents,
+    allClasses,
+  });
 }

@@ -2,18 +2,21 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import {
+  computeStaffPayout,
+  type CompPlan,
+  type CompContext,
+  type TaughtSession,
+  type BaseType,
+  type BonusType,
+  type ScopeType,
+} from "@/lib/compensation";
 
 // GET /api/staff/payroll?from=YYYY-MM-DD&to=YYYY-MM-DD
-// Computes per-staff pay for the period:
-// - Scheduled hours = (recurring weekly slot hours) * (count of that weekday in range) minus blocked exceptions
-// - Class teaching hours = sum of ClassSession durations where this staff is in
-//   the parent RecurringClass.assignedStaffIds (within range, non-canceled)
-// - Hourly pay = (scheduled + class teaching) hours × StaffProfile.hourlyRate
-// - Private lesson pay = sum over COMPLETED PrivateBookings in range with this coach:
-//     - if PrivateLessonPayRate FLAT: rate.payValue
-//     - if PrivateLessonPayRate PERCENT: lessonType.basePrice × (rate.payValue / 100)
-//     - if no rate set: 0 (so it's visible)
-// - Salary is reported as-is (per-period interpretation up to the owner)
+// Payroll preview driven by the modular compensation builder. Each staff
+// member's pay = their StaffCompensation plan (base + stackable bonuses, scoped
+// by assignment rules) evaluated against the period's classes/attendance/
+// signups/revenue. Staff with no plan show zeros.
 export async function GET(req: Request) {
   const session = await getServerSession(authOptions);
   if (!session || session.user.role !== "OWNER") {
@@ -32,148 +35,140 @@ export async function GET(req: Request) {
   to.setHours(23, 59, 59, 999);
   const clubId = session.user.clubId;
 
-  const [staff, availability, exceptions, payRates, completedBookings, classSessions] = await Promise.all([
-    prisma.user.findMany({
-      where: { clubId, role: { in: ["OWNER", "STAFF"] }, deletedAt: null },
-      select: {
-        id: true,
-        firstName: true,
-        lastName: true,
-        email: true,
-        role: true,
-        staffProfile: { select: { hourlyRate: true, salary: true, title: true } },
-      },
-      orderBy: { firstName: "asc" },
-    }),
-    prisma.staffAvailability.findMany({
-      where: { clubId, active: true },
-      select: { userId: true, dayOfWeek: true, startTime: true, endTime: true },
-    }),
-    prisma.staffAvailabilityException.findMany({
-      where: { clubId, date: { gte: from, lte: to } },
-    }),
-    prisma.privateLessonPayRate.findMany({
-      where: { clubId },
-      include: { lessonType: { select: { basePrice: true, title: true } } },
-    }),
-    prisma.privateBooking.findMany({
-      where: {
-        clubId,
-        status: "COMPLETED",
-        confirmedStartAt: { gte: from, lte: to },
-      },
-      select: {
-        id: true,
-        coachId: true,
-        lessonTypeId: true,
-        pricePaid: true,
-      },
-    }),
-    prisma.classSession.findMany({
-      where: {
-        clubId,
-        canceled: false,
-        startsAt: { gte: from, lte: to },
-      },
-      select: {
-        id: true,
-        startsAt: true,
-        endsAt: true,
-        recurringClass: {
-          select: { id: true, name: true, assignedStaffIds: true },
+  const [staff, classSessions, attendance, subscriptions, eventRegs, eventAssignments, privateBookings] =
+    await Promise.all([
+      prisma.user.findMany({
+        where: { clubId, role: { in: ["OWNER", "STAFF"] }, deletedAt: null },
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          email: true,
+          role: true,
+          staffProfile: { select: { title: true } },
+          compensation: { include: { bonuses: true, assignments: true } },
         },
-      },
-    }),
-  ]);
+        orderBy: { firstName: "asc" },
+      }),
+      prisma.classSession.findMany({
+        where: { clubId, canceled: false, startsAt: { gte: from, lte: to } },
+        select: {
+          id: true,
+          startsAt: true,
+          endsAt: true,
+          recurringClass: { select: { id: true, name: true, assignedStaffIds: true, pricingOptions: true } },
+        },
+      }),
+      prisma.attendanceRecord.findMany({
+        where: { clubId, createdAt: { gte: from, lte: to } },
+        select: {
+          status: true,
+          eventId: true,
+          classSessionId: true,
+          classSession: { select: { classId: true } },
+        },
+      }),
+      prisma.memberSubscription.findMany({
+        where: { member: { clubId }, createdAt: { gte: from, lte: to } },
+        select: { membershipId: true, price: true },
+      }),
+      prisma.eventRegistration.findMany({
+        where: { clubId, createdAt: { gte: from, lte: to } },
+        select: { eventId: true, amountPaid: true, status: true },
+      }),
+      prisma.eventStaffAssignment.findMany({
+        where: { clubId },
+        select: { userId: true, eventId: true },
+      }),
+      prisma.privateBooking.findMany({
+        where: { clubId, status: "COMPLETED", confirmedStartAt: { gte: from, lte: to } },
+        select: { coachId: true, lessonTypeId: true, pricePaid: true },
+      }),
+    ]);
 
-  function timeToMinutes(t: string): number {
-    const [h, m] = t.split(":").map(Number);
-    return h * 60 + m;
+  function dropInPrice(pricingOptions: unknown): number {
+    if (!Array.isArray(pricingOptions)) return 0;
+    const opt = (pricingOptions as Array<{ type?: string; price?: number }>).find(
+      (o) => o?.type === "dropin"
+    );
+    return opt?.price ? Number(opt.price) : 0;
   }
 
-  // Count occurrences of each weekday (0..6) in [from, to]
-  const weekdayCount = [0, 0, 0, 0, 0, 0, 0];
-  const cursor = new Date(from);
-  while (cursor <= to) {
-    weekdayCount[cursor.getDay()]++;
-    cursor.setDate(cursor.getDate() + 1);
+  // Pre-index a drop-in price per classId.
+  const classDropIn = new Map<string, number>();
+  for (const cs of classSessions) {
+    if (!classDropIn.has(cs.recurringClass.id)) {
+      classDropIn.set(cs.recurringClass.id, dropInPrice(cs.recurringClass.pricingOptions));
+    }
   }
 
   const result = staff.map((s) => {
-    const userAvail = availability.filter((a) => a.userId === s.id);
-    const userExceptions = exceptions.filter((e) => e.userId === s.id);
+    const comp = s.compensation;
 
-    // Base scheduled minutes from recurring slots
-    let scheduledMinutes = 0;
-    for (const slot of userAvail) {
-      const slotMinutes = timeToMinutes(slot.endTime) - timeToMinutes(slot.startTime);
-      if (slotMinutes <= 0) continue;
-      scheduledMinutes += slotMinutes * weekdayCount[slot.dayOfWeek];
-    }
-
-    // Subtract blocked exception days
-    for (const ex of userExceptions) {
-      const dow = new Date(ex.date).getDay();
-      const daySlots = userAvail.filter((a) => a.dayOfWeek === dow);
-      const dayBaseMinutes = daySlots.reduce(
-        (acc, slot) => acc + (timeToMinutes(slot.endTime) - timeToMinutes(slot.startTime)),
-        0
-      );
-      if (ex.type === "UNAVAILABLE") {
-        scheduledMinutes -= dayBaseMinutes;
-      } else if (ex.type === "PARTIAL" && ex.startTime && ex.endTime) {
-        const modifiedMinutes = timeToMinutes(ex.endTime) - timeToMinutes(ex.startTime);
-        scheduledMinutes -= dayBaseMinutes - Math.max(0, modifiedMinutes);
-      }
-    }
-    scheduledMinutes = Math.max(0, scheduledMinutes);
-    const scheduledHours = +(scheduledMinutes / 60).toFixed(2);
-
-    // Class teaching hours — only count sessions where this staff is assigned.
-    let classMinutes = 0;
-    const classTeachingDetail: { className: string; date: string; minutes: number }[] = [];
-    for (const cs of classSessions) {
-      const staffIds = Array.isArray(cs.recurringClass.assignedStaffIds)
-        ? (cs.recurringClass.assignedStaffIds as string[])
-        : [];
-      if (!staffIds.includes(s.id)) continue;
-      const dur = Math.max(0, (cs.endsAt.getTime() - cs.startsAt.getTime()) / 60000);
-      classMinutes += dur;
-      classTeachingDetail.push({
+    const taughtSessions: TaughtSession[] = classSessions
+      .filter((cs) => {
+        const ids = Array.isArray(cs.recurringClass.assignedStaffIds)
+          ? (cs.recurringClass.assignedStaffIds as string[])
+          : [];
+        return ids.includes(s.id);
+      })
+      .map((cs) => ({
+        sessionId: cs.id,
+        classId: cs.recurringClass.id,
         className: cs.recurringClass.name,
         date: cs.startsAt.toISOString(),
-        minutes: dur,
-      });
-    }
-    const classHours = +(classMinutes / 60).toFixed(2);
+        minutes: Math.max(0, (cs.endsAt.getTime() - cs.startsAt.getTime()) / 60000),
+        dropInPrice: classDropIn.get(cs.recurringClass.id) ?? 0,
+      }));
 
-    const hourlyRate = s.staffProfile?.hourlyRate ? Number(s.staffProfile.hourlyRate) : 0;
-    const hourlyPay = +((scheduledHours + classHours) * hourlyRate).toFixed(2);
-    const salary = s.staffProfile?.salary ? Number(s.staffProfile.salary) : 0;
+    const ctx: CompContext = {
+      taughtSessions,
+      attendance: attendance.map((a) => ({
+        classId: a.classSession?.classId ?? null,
+        eventId: a.eventId,
+        status: a.status,
+      })),
+      paidDropIns: attendance
+        .filter((a) => a.status === "DROP_IN" && a.classSession?.classId)
+        .map((a) => ({
+          classId: a.classSession!.classId,
+          price: classDropIn.get(a.classSession!.classId) ?? 0,
+        })),
+      subscriptions: subscriptions.map((x) => ({
+        membershipId: x.membershipId,
+        price: Number(x.price),
+      })),
+      eventRegistrations: eventRegs.map((r) => ({
+        eventId: r.eventId,
+        amountPaid: r.amountPaid ? Number(r.amountPaid) : 0,
+        status: r.status,
+      })),
+      assignedEventIds: eventAssignments.filter((e) => e.userId === s.id).map((e) => e.eventId),
+      privateBookings: privateBookings
+        .filter((p) => p.coachId === s.id)
+        .map((p) => ({ lessonTypeId: p.lessonTypeId, pricePaid: p.pricePaid ? Number(p.pricePaid) : 0 })),
+    };
 
-    // Private lesson pay
-    const myBookings = completedBookings.filter((b) => b.coachId === s.id);
-    let privatePay = 0;
-    const privateLessons = myBookings.map((b) => {
-      const rate = payRates.find((r) => r.userId === s.id && r.lessonTypeId === b.lessonTypeId);
-      let pay = 0;
-      if (rate) {
-        const payValue = Number(rate.payValue);
-        if (rate.payType === "FLAT") {
-          pay = payValue;
-        } else if (rate.payType === "PERCENT") {
-          const basePrice = b.pricePaid ? Number(b.pricePaid) : Number(rate.lessonType.basePrice ?? 0);
-          pay = +(basePrice * (payValue / 100)).toFixed(2);
-        }
-      }
-      privatePay += pay;
-      return {
-        bookingId: b.id,
-        lessonTitle: rate?.lessonType.title ?? "Private lesson",
-        pay,
+    let plan: CompPlan | null = null;
+    if (comp) {
+      plan = {
+        baseType: comp.baseType as BaseType,
+        baseAmount: Number(comp.baseAmount),
+        baseScopeClassIds: comp.assignments
+          .filter((a) => a.bonusId === null && a.scopeType === "CLASS")
+          .map((a) => a.scopeId),
+        bonuses: comp.bonuses.map((bo) => ({
+          id: bo.id,
+          bonusType: bo.bonusType as BonusType,
+          amount: Number(bo.amount),
+          scopes: comp.assignments
+            .filter((a) => a.bonusId === bo.id)
+            .map((a) => ({ scopeType: a.scopeType as ScopeType, scopeId: a.scopeId })),
+        })),
       };
-    });
-    privatePay = +privatePay.toFixed(2);
+    }
+
+    const payout = plan ? computeStaffPayout(plan, ctx) : null;
 
     return {
       id: s.id,
@@ -182,29 +177,31 @@ export async function GET(req: Request) {
       email: s.email,
       role: s.role,
       title: s.staffProfile?.title ?? null,
-      scheduledHours,
-      classHours,
-      classSessionCount: classTeachingDetail.length,
-      classTeachingDetail,
-      hourlyRate,
-      hourlyPay,
-      salary,
-      privateLessonCount: myBookings.length,
-      privatePay,
-      privateLessons,
-      totalPay: +(hourlyPay + salary + privatePay).toFixed(2),
+      hasPlan: !!plan,
+      payout,
     };
   });
+
+  const totals = result.reduce(
+    (acc, r) => {
+      if (r.payout) {
+        acc.base += r.payout.base.pay;
+        acc.bonus += r.payout.bonuses.reduce((a, b) => a + b.pay, 0);
+        acc.total += r.payout.total;
+      }
+      return acc;
+    },
+    { base: 0, bonus: 0, total: 0 }
+  );
 
   return NextResponse.json({
     from: from.toISOString(),
     to: to.toISOString(),
     staff: result,
     totals: {
-      hourly: +result.reduce((acc, r) => acc + r.hourlyPay, 0).toFixed(2),
-      salary: +result.reduce((acc, r) => acc + r.salary, 0).toFixed(2),
-      private: +result.reduce((acc, r) => acc + r.privatePay, 0).toFixed(2),
-      total: +result.reduce((acc, r) => acc + r.totalPay, 0).toFixed(2),
+      base: +totals.base.toFixed(2),
+      bonus: +totals.bonus.toFixed(2),
+      total: +totals.total.toFixed(2),
     },
   });
 }

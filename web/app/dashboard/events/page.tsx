@@ -61,6 +61,9 @@ type Event = {
   variableCostEnabled?: boolean;
   variableCostMode?: string | null;
   variableCostBilledAt?: string | null;
+  variableCostTotal?: number | string | null;
+  variableCostEstimatedSignups?: number | null;
+  variableCostEstimatedTotal?: number | string | null;
 };
 
 type Member = { id: string; firstName: string; lastName: string };
@@ -358,6 +361,9 @@ function EventModal({ event, clubEventTypes, memberships, staffList, onClose, on
   const [varCostEstSignups, setVarCostEstSignups] = useState<string>(
     ev?.variableCostEstimatedSignups != null ? String(ev.variableCostEstimatedSignups) : ""
   );
+  const [varCostEstTotal, setVarCostEstTotal] = useState<string>(
+    ev?.variableCostEstimatedTotal != null ? String(ev.variableCostEstimatedTotal) : ""
+  );
 
   const isTournament = typeKey === "TOURNAMENT";
   const publicSlug: string | null = ev?.publicSlug || null;
@@ -443,6 +449,10 @@ function EventModal({ event, clubEventTypes, memberships, staffList, onClose, on
         variableCostEstimatedSignups:
           varCostEnabled && varCostMode === "ESTIMATED" && varCostEstSignups
             ? parseInt(varCostEstSignups, 10)
+            : null,
+        variableCostEstimatedTotal:
+          varCostEnabled && varCostMode === "OFFICIAL" && varCostEstTotal
+            ? parseFloat(varCostEstTotal)
             : null,
         sessions: sessions.length > 0
           ? sessions.map((s, i) => ({ name: s.name || null, startsAt: new Date(s.startsAt).toISOString(), endsAt: new Date(s.endsAt).toISOString(), sortOrder: i }))
@@ -576,13 +586,28 @@ function EventModal({ event, clubEventTypes, memberships, staffList, onClose, on
                             />
                           </div>
                         )}
+                        {varCostMode === "OFFICIAL" && (
+                          <div>
+                            <label className="block text-xs font-medium text-text-primary mb-1">
+                              Estimated total (shown to parents)
+                            </label>
+                            <input
+                              type="number" min="0" step="0.01" value={varCostEstTotal}
+                              onChange={(e) => setVarCostEstTotal(e.target.value)}
+                              placeholder="500.00"
+                              className="w-full px-3 py-2 border border-app-border rounded-lg text-sm"
+                            />
+                          </div>
+                        )}
                       </div>
                       <p className="text-[11px] text-text-muted">
                         {varCostMode === "ESTIMATED"
                           ? varCostTotal && varCostEstSignups
                             ? `Each signup pays $${(Number(varCostTotal) / Number(varCostEstSignups || 1)).toFixed(2)} at registration.`
                             : "Each signup pays total ÷ expected signups, charged at registration."
-                          : "Signups are free now. After the tournament, use “Bill registrants” on the event to split the official total across everyone who signed up."}
+                          : varCostEstTotal
+                            ? `Signups are free now. Parents see an estimate of ~$${Number(varCostEstTotal).toFixed(2)} total split across attendees. After the tournament, use “Send invoices” to bill the official total.`
+                            : "Signups are free now. Add an estimated total so parents have a rough idea, then use “Send invoices” after the tournament to bill the official total."}
                       </p>
                     </>
                   )}
@@ -1167,6 +1192,7 @@ function RegistrationsModal({ eventId, onClose }: { eventId: string; onClose: ()
       variableCostEnabled: boolean;
       variableCostMode: string | null;
       variableCostTotal: number | null;
+      variableCostEstimatedTotal: number | null;
       variableCostBilledAt: string | null;
     };
     registrations: RegistrationRow[];
@@ -1186,7 +1212,7 @@ function RegistrationsModal({ eventId, onClose }: { eventId: string; onClose: ()
   useEffect(() => { load(); }, [eventId]);
 
   async function billRegistrants(force: boolean) {
-    if (!confirm(force ? "Re-bill everyone still unpaid?" : "Split the official total across all registrants and email them payment links?")) return;
+    if (!confirm(force ? "Re-send invoices to everyone still unpaid?" : "Send invoices now? The official total is split evenly across all registrants and each gets an emailed payment link.")) return;
     setBilling(true);
     setMsg("");
     const res = await fetch(`/api/events/${eventId}/bill-registrants`, {
@@ -1222,13 +1248,15 @@ function RegistrationsModal({ eventId, onClose }: { eventId: string; onClose: ()
             <>
               {isOfficial && (
                 <div className="bg-app-bg border border-app-border rounded-lg p-4 mb-4">
-                  <p className="text-sm text-text-primary font-medium mb-1">Official cost billing</p>
+                  <p className="text-sm text-text-primary font-medium mb-1">Send invoices (official cost split)</p>
                   <p className="text-xs text-text-muted mb-3">
                     {data.activeCount} active registrant(s).
                     {ev?.variableCostTotal != null && data.officialPerHead != null
-                      ? ` $${Number(ev.variableCostTotal).toFixed(2)} ÷ ${data.activeCount} = $${data.officialPerHead.toFixed(2)} each.`
-                      : " Set the official total on the event first."}
-                    {ev?.variableCostBilledAt ? ` Last billed ${new Date(ev.variableCostBilledAt).toLocaleString()}.` : ""}
+                      ? ` Official total $${Number(ev.variableCostTotal).toFixed(2)} ÷ ${data.activeCount} = $${data.officialPerHead.toFixed(2)} each.`
+                      : ev?.variableCostEstimatedTotal != null
+                        ? ` No official total set yet — estimated ~$${Number(ev.variableCostEstimatedTotal).toFixed(2)} total (≈ $${(Number(ev.variableCostEstimatedTotal) / Math.max(1, data.activeCount)).toFixed(2)} each). Set the official total on the event before sending invoices.`
+                        : " Set the official total on the event before sending invoices."}
+                    {ev?.variableCostBilledAt ? ` Invoices last sent ${new Date(ev.variableCostBilledAt).toLocaleString()}.` : ""}
                   </p>
                   <div className="flex gap-2">
                     <button
@@ -1236,7 +1264,7 @@ function RegistrationsModal({ eventId, onClose }: { eventId: string; onClose: ()
                       disabled={billing || !ev?.variableCostTotal}
                       className="text-xs px-3 py-1.5 bg-brand text-white rounded-lg hover:bg-brand-hover disabled:opacity-50"
                     >
-                      {billing ? "Billing…" : ev?.variableCostBilledAt ? "Bill again" : "Bill registrants"}
+                      {billing ? "Sending…" : ev?.variableCostBilledAt ? "Send invoices again" : "Send invoices"}
                     </button>
                     {ev?.variableCostBilledAt && (
                       <button
@@ -1244,7 +1272,7 @@ function RegistrationsModal({ eventId, onClose }: { eventId: string; onClose: ()
                         disabled={billing}
                         className="text-xs px-3 py-1.5 border border-app-border rounded-lg text-text-primary hover:bg-app-bg disabled:opacity-50"
                       >
-                        Re-bill unpaid
+                        Re-send to unpaid
                       </button>
                     )}
                   </div>

@@ -1,6 +1,26 @@
 "use client";
 
 import { Fragment, useEffect, useState } from "react";
+import Link from "next/link";
+
+type BonusLine = {
+  id: string;
+  type: "ATTENDANCE" | "SIGNUP" | "REVENUE_SHARE";
+  rate: number;
+  basisLabel: string;
+  basisCount: number;
+  pay: number;
+};
+
+type Payout = {
+  base: { type: "SALARY" | "PER_CLASS" | "HOURLY"; amount: number; detail: string; pay: number };
+  bonuses: BonusLine[];
+  classesCoached: number;
+  hoursCoached: number;
+  attendanceTotal: number;
+  signupTotal: number;
+  total: number;
+};
 
 type StaffPay = {
   id: string;
@@ -9,35 +29,25 @@ type StaffPay = {
   email: string;
   role: string;
   title: string | null;
-  scheduledHours: number;
-  classHours: number;
-  classSessionCount: number;
-  classTeachingDetail: { className: string; date: string; minutes: number }[];
-  hourlyRate: number;
-  hourlyPay: number;
-  salary: number;
-  privateLessonCount: number;
-  privatePay: number;
-  privateLessons: { bookingId: string; lessonTitle: string; pay: number }[];
-  totalPay: number;
+  hasPlan: boolean;
+  payout: Payout | null;
 };
 
 type PayrollResponse = {
   from: string;
   to: string;
   staff: StaffPay[];
-  totals: { hourly: number; salary: number; private: number; total: number };
+  totals: { base: number; bonus: number; total: number };
 };
 
 function formatMoney(n: number) {
   return n.toLocaleString("en-US", { style: "currency", currency: "USD" });
 }
-
 function toISODate(d: Date) {
   return d.toISOString().slice(0, 10);
 }
 
-function presetRange(key: string): { from: string; to: string; label: string } {
+function presetRange(key: string): { from: string; to: string } {
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   if (key === "this_week") {
@@ -45,30 +55,35 @@ function presetRange(key: string): { from: string; to: string; label: string } {
     start.setDate(start.getDate() - start.getDay());
     const end = new Date(start);
     end.setDate(end.getDate() + 6);
-    return { from: toISODate(start), to: toISODate(end), label: "This week" };
+    return { from: toISODate(start), to: toISODate(end) };
   }
   if (key === "last_week") {
     const start = new Date(today);
     start.setDate(start.getDate() - start.getDay() - 7);
     const end = new Date(start);
     end.setDate(end.getDate() + 6);
-    return { from: toISODate(start), to: toISODate(end), label: "Last week" };
+    return { from: toISODate(start), to: toISODate(end) };
   }
   if (key === "this_month") {
     const start = new Date(now.getFullYear(), now.getMonth(), 1);
     const end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-    return { from: toISODate(start), to: toISODate(end), label: "This month" };
+    return { from: toISODate(start), to: toISODate(end) };
   }
   if (key === "last_month") {
     const start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
     const end = new Date(now.getFullYear(), now.getMonth(), 0);
-    return { from: toISODate(start), to: toISODate(end), label: "Last month" };
+    return { from: toISODate(start), to: toISODate(end) };
   }
-  // default: this_pay_period assumes bi-weekly ending today
   const start = new Date(today);
   start.setDate(start.getDate() - 13);
-  return { from: toISODate(start), to: toISODate(today), label: "Last 14 days" };
+  return { from: toISODate(start), to: toISODate(today) };
 }
+
+const BONUS_SHORT: Record<BonusLine["type"], string> = {
+  ATTENDANCE: "Attendance",
+  SIGNUP: "Signup",
+  REVENUE_SHARE: "Revenue share",
+};
 
 export default function StaffPayrollPage() {
   const [preset, setPreset] = useState("this_month");
@@ -97,21 +112,29 @@ export default function StaffPayrollPage() {
 
   function downloadCsv() {
     if (!data) return;
-    const headers = ["Staff", "Email", "Title", "Scheduled hours", "Class teaching hours", "Class sessions", "Hourly rate", "Hourly pay", "Salary", "Private lessons", "Private pay", "Total"];
-    const rows = data.staff.map((s) => [
-      `${s.firstName} ${s.lastName}`,
-      s.email,
-      s.title ?? "",
-      s.scheduledHours.toFixed(2),
-      s.classHours.toFixed(2),
-      String(s.classSessionCount),
-      s.hourlyRate.toFixed(2),
-      s.hourlyPay.toFixed(2),
-      s.salary.toFixed(2),
-      String(s.privateLessonCount),
-      s.privatePay.toFixed(2),
-      s.totalPay.toFixed(2),
-    ]);
+    const headers = [
+      "Staff", "Email", "Title", "Plan", "Base type", "Base pay",
+      "Classes coached", "Hours coached", "Attendance total", "Signup total",
+      "Bonus pay", "Total",
+    ];
+    const rows = data.staff.map((s) => {
+      const p = s.payout;
+      const bonusPay = p ? p.bonuses.reduce((a, b) => a + b.pay, 0) : 0;
+      return [
+        `${s.firstName} ${s.lastName}`,
+        s.email,
+        s.title ?? "",
+        s.hasPlan ? "Yes" : "No plan",
+        p?.base.type ?? "",
+        p ? p.base.pay.toFixed(2) : "0.00",
+        p ? String(p.classesCoached) : "0",
+        p ? p.hoursCoached.toFixed(2) : "0",
+        p ? String(p.attendanceTotal) : "0",
+        p ? String(p.signupTotal) : "0",
+        bonusPay.toFixed(2),
+        p ? p.total.toFixed(2) : "0.00",
+      ];
+    });
     const csv = [headers, ...rows]
       .map((r) => r.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","))
       .join("\n");
@@ -129,7 +152,7 @@ export default function StaffPayrollPage() {
         <div>
           <h1 className="text-2xl font-semibold text-text-primary">Payroll &amp; Payouts</h1>
           <p className="text-sm text-text-muted mt-1">
-            Computed from scheduled hours, hourly rates, and completed private lessons.
+            Calculated from each staff member&apos;s compensation plan (base + bonuses) over the selected period.
           </p>
         </div>
         <button
@@ -164,21 +187,13 @@ export default function StaffPayrollPage() {
         <div className="flex items-center gap-2">
           <div>
             <label className="block text-[10px] uppercase tracking-wider text-text-muted mb-0.5">From</label>
-            <input
-              type="date"
-              value={from}
-              onChange={(e) => { setFrom(e.target.value); setPreset("custom"); }}
-              className="px-2 py-1 border border-app-border rounded text-sm bg-surface"
-            />
+            <input type="date" value={from} onChange={(e) => { setFrom(e.target.value); setPreset("custom"); }}
+              className="px-2 py-1 border border-app-border rounded text-sm bg-surface" />
           </div>
           <div>
             <label className="block text-[10px] uppercase tracking-wider text-text-muted mb-0.5">To</label>
-            <input
-              type="date"
-              value={to}
-              onChange={(e) => { setTo(e.target.value); setPreset("custom"); }}
-              className="px-2 py-1 border border-app-border rounded text-sm bg-surface"
-            />
+            <input type="date" value={to} onChange={(e) => { setTo(e.target.value); setPreset("custom"); }}
+              className="px-2 py-1 border border-app-border rounded text-sm bg-surface" />
           </div>
         </div>
       </div>
@@ -193,10 +208,9 @@ export default function StaffPayrollPage() {
       ) : (
         <>
           {/* Totals */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-            <Total label="Hourly pay" value={formatMoney(data.totals.hourly)} />
-            <Total label="Salary" value={formatMoney(data.totals.salary)} />
-            <Total label="Private lessons" value={formatMoney(data.totals.private)} />
+          <div className="grid grid-cols-3 gap-3 mb-4">
+            <Total label="Base pay" value={formatMoney(data.totals.base)} />
+            <Total label="Bonus pay" value={formatMoney(data.totals.bonus)} />
             <Total label="Total payout" value={formatMoney(data.totals.total)} accent />
           </div>
 
@@ -206,104 +220,105 @@ export default function StaffPayrollPage() {
               <thead>
                 <tr className="bg-app-bg border-b border-app-border">
                   <th className="text-left px-4 py-2 font-medium text-text-muted uppercase tracking-wider text-[11px]">Staff</th>
-                  <th className="text-right px-3 py-2 font-medium text-text-muted uppercase tracking-wider text-[11px]">Scheduled</th>
+                  <th className="text-left px-3 py-2 font-medium text-text-muted uppercase tracking-wider text-[11px]">Base</th>
                   <th className="text-right px-3 py-2 font-medium text-text-muted uppercase tracking-wider text-[11px]">Classes</th>
-                  <th className="text-right px-3 py-2 font-medium text-text-muted uppercase tracking-wider text-[11px]">Rate</th>
-                  <th className="text-right px-3 py-2 font-medium text-text-muted uppercase tracking-wider text-[11px]">Hourly</th>
-                  <th className="text-right px-3 py-2 font-medium text-text-muted uppercase tracking-wider text-[11px]">Salary</th>
-                  <th className="text-right px-3 py-2 font-medium text-text-muted uppercase tracking-wider text-[11px]">Privates</th>
+                  <th className="text-right px-3 py-2 font-medium text-text-muted uppercase tracking-wider text-[11px]">Attendance</th>
+                  <th className="text-right px-3 py-2 font-medium text-text-muted uppercase tracking-wider text-[11px]">Signups</th>
+                  <th className="text-right px-3 py-2 font-medium text-text-muted uppercase tracking-wider text-[11px]">Base pay</th>
+                  <th className="text-right px-3 py-2 font-medium text-text-muted uppercase tracking-wider text-[11px]">Bonuses</th>
                   <th className="text-right px-3 py-2 font-medium text-text-muted uppercase tracking-wider text-[11px]">Total</th>
                   <th />
                 </tr>
               </thead>
               <tbody>
-                {data.staff.map((s) => (
-                  <Fragment key={s.id}>
-                    <tr className="border-b border-app-border last:border-0">
-                      <td className="px-4 py-3">
-                        <p className="font-medium text-text-primary">{s.firstName} {s.lastName}</p>
-                        <p className="text-xs text-text-muted">{s.title || (s.role === "OWNER" ? "Owner" : "Staff")}</p>
-                      </td>
-                      <td className="px-3 py-3 text-right text-text-primary">{s.scheduledHours.toFixed(2)}</td>
-                      <td className="px-3 py-3 text-right text-text-primary">
-                        {s.classHours > 0 ? s.classHours.toFixed(2) : "—"}
-                        {s.classSessionCount > 0 && (
-                          <span className="text-xs text-text-muted ml-1">({s.classSessionCount})</span>
-                        )}
-                      </td>
-                      <td className="px-3 py-3 text-right text-text-muted">
-                        {s.hourlyRate > 0 ? formatMoney(s.hourlyRate) : "—"}
-                      </td>
-                      <td className="px-3 py-3 text-right text-text-primary">{formatMoney(s.hourlyPay)}</td>
-                      <td className="px-3 py-3 text-right text-text-muted">{s.salary > 0 ? formatMoney(s.salary) : "—"}</td>
-                      <td className="px-3 py-3 text-right">
-                        <span className="text-text-primary">{formatMoney(s.privatePay)}</span>
-                        {s.privateLessonCount > 0 && (
-                          <span className="text-xs text-text-muted ml-1">({s.privateLessonCount})</span>
-                        )}
-                      </td>
-                      <td className="px-3 py-3 text-right font-semibold text-text-primary">{formatMoney(s.totalPay)}</td>
-                      <td className="px-3 py-3 text-right">
-                        {s.privateLessons.length > 0 && (
-                          <button
-                            onClick={() => setExpanded(expanded === s.id ? null : s.id)}
-                            className="text-xs text-brand hover:underline"
-                          >
-                            {expanded === s.id ? "Hide" : "Details"}
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                    {expanded === s.id && (s.privateLessons.length > 0 || s.classTeachingDetail.length > 0) && (
-                      <tr className="bg-app-bg">
-                        <td colSpan={9} className="px-4 py-3 space-y-3">
-                          {s.classTeachingDetail.length > 0 && (
-                            <div>
-                              <p className="text-xs uppercase tracking-wider text-text-muted font-medium mb-1.5">
-                                Classes taught
-                              </p>
-                              <ul className="text-xs space-y-1">
-                                {s.classTeachingDetail.map((c, i) => (
-                                  <li key={i} className="flex justify-between text-text-primary">
-                                    <span>
-                                      {c.className}
-                                      <span className="text-text-muted ml-1.5">
-                                        {new Date(c.date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-                                      </span>
-                                    </span>
-                                    <span>{(c.minutes / 60).toFixed(2)} hrs</span>
-                                  </li>
-                                ))}
-                              </ul>
-                            </div>
+                {data.staff.map((s) => {
+                  const p = s.payout;
+                  const bonusPay = p ? p.bonuses.reduce((a, b) => a + b.pay, 0) : 0;
+                  return (
+                    <Fragment key={s.id}>
+                      <tr className="border-b border-app-border last:border-0">
+                        <td className="px-4 py-3">
+                          <p className="font-medium text-text-primary">{s.firstName} {s.lastName}</p>
+                          <p className="text-xs text-text-muted">{s.title || (s.role === "OWNER" ? "Owner" : "Staff")}</p>
+                        </td>
+                        <td className="px-3 py-3">
+                          {p ? (
+                            <span className="text-xs text-text-primary">
+                              {p.base.type === "SALARY" ? "Salary" : p.base.type === "PER_CLASS" ? "Per class" : "Hourly"}
+                              <span className="text-text-muted"> · {p.base.detail}</span>
+                            </span>
+                          ) : (
+                            <span className="text-xs text-text-muted">No plan set</span>
                           )}
-                          {s.privateLessons.length > 0 && (
-                            <div>
-                              <p className="text-xs uppercase tracking-wider text-text-muted font-medium mb-1.5">
-                                Private lessons
-                              </p>
-                              <ul className="text-xs space-y-1">
-                                {s.privateLessons.map((l) => (
-                                  <li key={l.bookingId} className="flex justify-between text-text-primary">
-                                    <span>{l.lessonTitle}</span>
-                                    <span>{l.pay > 0 ? formatMoney(l.pay) : <span className="text-red-600">No pay rate set</span>}</span>
-                                  </li>
-                                ))}
-                              </ul>
-                            </div>
+                        </td>
+                        <td className="px-3 py-3 text-right text-text-primary">{p ? p.classesCoached : "—"}</td>
+                        <td className="px-3 py-3 text-right text-text-primary">{p ? p.attendanceTotal : "—"}</td>
+                        <td className="px-3 py-3 text-right text-text-primary">{p ? p.signupTotal : "—"}</td>
+                        <td className="px-3 py-3 text-right text-text-primary">{p ? formatMoney(p.base.pay) : "—"}</td>
+                        <td className="px-3 py-3 text-right text-text-primary">{p ? formatMoney(bonusPay) : "—"}</td>
+                        <td className="px-3 py-3 text-right font-semibold text-text-primary">{p ? formatMoney(p.total) : formatMoney(0)}</td>
+                        <td className="px-3 py-3 text-right">
+                          {p && (p.bonuses.length > 0 || p.classesCoached > 0) && (
+                            <button
+                              onClick={() => setExpanded(expanded === s.id ? null : s.id)}
+                              className="text-xs text-brand hover:underline"
+                            >
+                              {expanded === s.id ? "Hide" : "Details"}
+                            </button>
+                          )}
+                          {!s.hasPlan && (
+                            <Link href="/dashboard/staff" className="text-xs text-brand hover:underline">Set up</Link>
                           )}
                         </td>
                       </tr>
-                    )}
-                  </Fragment>
-                ))}
+                      {expanded === s.id && p && (
+                        <tr className="bg-app-bg">
+                          <td colSpan={9} className="px-4 py-3 space-y-3">
+                            <div>
+                              <p className="text-xs uppercase tracking-wider text-text-muted font-medium mb-1.5">Payout breakdown</p>
+                              <ul className="text-xs space-y-1">
+                                <li className="flex justify-between text-text-primary">
+                                  <span>
+                                    Base ·{" "}
+                                    {p.base.type === "SALARY" ? "Salary" : p.base.type === "PER_CLASS" ? "Per class" : "Hourly"}
+                                    <span className="text-text-muted"> ({p.base.detail})</span>
+                                  </span>
+                                  <span>{formatMoney(p.base.pay)}</span>
+                                </li>
+                                {p.bonuses.map((b) => (
+                                  <li key={b.id} className="flex justify-between text-text-primary">
+                                    <span>
+                                      {BONUS_SHORT[b.type]}
+                                      <span className="text-text-muted"> ({b.basisLabel})</span>
+                                    </span>
+                                    <span>{formatMoney(b.pay)}</span>
+                                  </li>
+                                ))}
+                                <li className="flex justify-between font-semibold text-text-primary border-t border-app-border pt-1 mt-1">
+                                  <span>Total</span>
+                                  <span>{formatMoney(p.total)}</span>
+                                </li>
+                              </ul>
+                            </div>
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                              <Mini label="Classes coached" value={String(p.classesCoached)} />
+                              <Mini label="Hours coached" value={p.hoursCoached.toFixed(2)} />
+                              <Mini label="Attendance total" value={String(p.attendanceTotal)} />
+                              <Mini label="Signup total" value={String(p.signupTotal)} />
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
 
           <p className="text-[11px] text-text-muted mt-3">
-            Scheduled hours come from the <a href="/dashboard/staff/availability" className="underline">Availability</a> page (minus date exceptions).
-            Per-staff hourly rate and salary are set on the staff Directory edit form. Private lesson pay rates are set per coach + lesson type.
+            Set or change a staff member&apos;s compensation plan from the{" "}
+            <Link href="/dashboard/staff" className="underline">Staff directory</Link> → Edit.
           </p>
         </>
       )}
@@ -313,9 +328,18 @@ export default function StaffPayrollPage() {
 
 function Total({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
   return (
-    <div className={`rounded-xl border p-4 ${accent ? "bg-brand text-white border-brand" : "bg-surface border-app-border"}`}>
-      <p className={`text-xs uppercase tracking-wide mb-1 ${accent ? "text-white/80" : "text-text-muted"}`}>{label}</p>
-      <p className={`text-xl font-semibold ${accent ? "text-white" : "text-text-primary"}`}>{value}</p>
+    <div className={`rounded-xl border p-4 ${accent ? "border-brand bg-brand/5" : "border-app-border bg-surface"}`}>
+      <p className="text-xs uppercase tracking-wider text-text-muted mb-1">{label}</p>
+      <p className={`text-xl font-semibold ${accent ? "text-brand" : "text-text-primary"}`}>{value}</p>
+    </div>
+  );
+}
+
+function Mini({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="bg-surface border border-app-border rounded-lg p-2.5">
+      <p className="text-[10px] uppercase tracking-wider text-text-muted">{label}</p>
+      <p className="text-sm font-semibold text-text-primary">{value}</p>
     </div>
   );
 }

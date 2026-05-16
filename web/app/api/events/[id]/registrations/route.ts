@@ -24,6 +24,7 @@ export async function GET(_req: Request, context: { params: Promise<{ id: string
       variableCostMode: true,
       variableCostTotal: true,
       variableCostEstimatedSignups: true,
+      variableCostEstimatedTotal: true,
       variableCostBilledAt: true,
     },
   });

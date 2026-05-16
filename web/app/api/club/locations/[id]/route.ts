@@ -7,6 +7,8 @@ import { prisma } from "@/lib/prisma";
 const schema = z.object({
   name: z.string().min(1).optional(),
   address: z.string().nullable().optional(),
+  latitude: z.number().min(-90).max(90).nullable().optional(),
+  longitude: z.number().min(-180).max(180).nullable().optional(),
 });
 
 export async function PATCH(req: Request, context: { params: Promise<{ id: string }> }) {
@@ -28,6 +30,8 @@ export async function PATCH(req: Request, context: { params: Promise<{ id: strin
       data: {
         ...(data.name !== undefined && { name: data.name }),
         ...(data.address !== undefined && { address: data.address }),
+        ...(data.latitude !== undefined && { latitude: data.latitude }),
+        ...(data.longitude !== undefined && { longitude: data.longitude }),
       },
     });
     return NextResponse.json(updated);

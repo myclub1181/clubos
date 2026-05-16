@@ -5,6 +5,7 @@ import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { getTierFeatures } from "@/lib/tier";
 import { upsertGuardianProfile } from "@/lib/guardian";
+import { expireStaleProspects } from "@/lib/memberStatus";
 
 export async function GET(req: Request) {
   const session = await getServerSession(authOptions);
@@ -12,6 +13,9 @@ export async function GET(req: Request) {
 
   const url = new URL(req.url);
   const guardianEmail = url.searchParams.get("guardianEmail");
+
+  // Self-heal: lazily flip prospects older than the TTL to INACTIVE.
+  await expireStaleProspects(session.user.clubId);
 
   const members = await prisma.member.findMany({
     where: {

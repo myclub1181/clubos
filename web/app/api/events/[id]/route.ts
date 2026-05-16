@@ -50,6 +50,7 @@ const updateSchema = z.object({
   variableCostMode: z.enum(["ESTIMATED", "OFFICIAL"]).optional().nullable(),
   variableCostTotal: z.number().min(0).optional().nullable(),
   variableCostEstimatedSignups: z.number().int().positive().optional().nullable(),
+  variableCostEstimatedTotal: z.number().min(0).optional().nullable(),
 });
 
 function slugify(name: string): string {
@@ -133,7 +134,7 @@ export async function PATCH(req: Request, context: { params: Promise<{ id: strin
       publicSlug = candidate;
     }
 
-    const { registrationForm, variableCostEnabled, variableCostMode, variableCostTotal, variableCostEstimatedSignups, tournamentMode, ...flatRest } = rest;
+    const { registrationForm, variableCostEnabled, variableCostMode, variableCostTotal, variableCostEstimatedSignups, variableCostEstimatedTotal, tournamentMode, ...flatRest } = rest;
 
     const updated = await prisma.event.update({
       where: { id: params.id },
@@ -146,6 +147,7 @@ export async function PATCH(req: Request, context: { params: Promise<{ id: strin
         ...(variableCostMode !== undefined ? { variableCostMode } : {}),
         ...(variableCostTotal !== undefined ? { variableCostTotal } : {}),
         ...(variableCostEstimatedSignups !== undefined ? { variableCostEstimatedSignups } : {}),
+        ...(variableCostEstimatedTotal !== undefined ? { variableCostEstimatedTotal } : {}),
         ...(isTournament ? {} : { isTournament: false }),
         ...(isTournament ? { isTournament: true } : {}),
         publicSlug,

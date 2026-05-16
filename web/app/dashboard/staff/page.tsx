@@ -153,12 +153,6 @@ export default function StaffPage() {
                       {s.staffProfile?.title && (
                         <span className="text-xs text-text-muted">· {s.staffProfile.title}</span>
                       )}
-                      {s.staffProfile?.hourlyRate && (
-                        <span className="text-xs text-text-muted">${s.staffProfile.hourlyRate}/hr</span>
-                      )}
-                      {s.staffProfile?.salary && (
-                        <span className="text-xs text-text-muted">${s.staffProfile.salary}/yr salary</span>
-                      )}
                     </div>
                     <p className="text-xs text-text-muted mb-2">{s.email}</p>
                     <div className="flex flex-wrap gap-1">
@@ -365,8 +359,6 @@ function EditStaffModal({
 }) {
   const existing = staff.staffProfile?.permissions || {};
   const [title, setTitle] = useState(staff.staffProfile?.title || "");
-  const [hourlyRate, setHourlyRate] = useState(staff.staffProfile?.hourlyRate || "");
-  const [salary, setSalary] = useState(staff.staffProfile?.salary || "");
   const [appointmentPrice, setAppointmentPrice] = useState(staff.staffProfile?.appointmentPrice || "");
   const [bio, setBio] = useState((staff.staffProfile as any)?.bio || "");
   const [publicEmail, setPublicEmail] = useState((staff.staffProfile as any)?.publicEmail || "");
@@ -396,8 +388,6 @@ function EditStaffModal({
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         title: title || null,
-        hourlyRate: hourlyRate ? parseFloat(hourlyRate) : null,
-        salary: salary ? parseFloat(salary) : null,
         appointmentPrice: appointmentPrice ? parseFloat(appointmentPrice) : null,
         bio: bio || null,
         publicEmail: publicEmail || null,
@@ -434,29 +424,18 @@ function EditStaffModal({
               className="w-full px-3 py-2 border border-app-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand" />
           </div>
 
-          <div className="grid grid-cols-3 gap-3">
-            <div>
-              <label className="block text-sm font-medium text-text-primary mb-1">Hourly rate ($)</label>
-              <input type="number" min="0" step="0.01" value={hourlyRate}
-                onChange={(e) => setHourlyRate(e.target.value)} placeholder="0.00"
-                className="w-full px-3 py-2 border border-app-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand" />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-text-primary mb-1">Annual salary ($)</label>
-              <input type="number" min="0" step="0.01" value={salary}
-                onChange={(e) => setSalary(e.target.value)} placeholder="0.00"
-                className="w-full px-3 py-2 border border-app-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand" />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-text-primary mb-1">Private rate ($)</label>
-              <input type="number" min="0" step="0.01" value={appointmentPrice}
-                onChange={(e) => setAppointmentPrice(e.target.value)} placeholder="0.00"
-                className="w-full px-3 py-2 border border-app-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand" />
-            </div>
+          <div className="w-1/2">
+            <label className="block text-sm font-medium text-text-primary mb-1">Private lesson display price ($)</label>
+            <input type="number" min="0" step="0.01" value={appointmentPrice}
+              onChange={(e) => setAppointmentPrice(e.target.value)} placeholder="0.00"
+              className="w-full px-3 py-2 border border-app-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand" />
+            <p className="text-xs text-text-muted mt-1">Shown to members when booking a 1-on-1 with this coach. Pay is set in the compensation plan below.</p>
           </div>
-          <p className="text-xs text-text-muted -mt-2">
-            Hourly rate and salary are for your records. Private rate is shown when booking 1-on-1 sessions.
-          </p>
+
+          <div className="pt-2 border-t border-app-border">
+            <p className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-3">Compensation plan</p>
+            <CompensationBuilder staffId={staff.id} />
+          </div>
 
           <div className="pt-2 border-t border-app-border">
             <p className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-3">Member portal profile</p>
@@ -532,6 +511,251 @@ function EditStaffModal({
             </button>
           </div>
         </form>
+      </div>
+    </div>
+  );
+}
+
+/* ── Modular compensation builder ─────────────────────────────────────────── */
+
+type ScopeType = "CLASS" | "EVENT" | "MEMBERSHIP" | "PRIVATE_LESSON_TYPE";
+type Scope = { scopeType: ScopeType; scopeId: string };
+type BonusDraft = { bonusType: "ATTENDANCE" | "SIGNUP" | "REVENUE_SHARE"; amount: string; scopes: Scope[] };
+type Opt = { id: string; name: string };
+type CompOptions = { classes: Opt[]; events: Opt[]; memberships: Opt[]; lessonTypes: Opt[] };
+
+const BONUS_LABEL: Record<BonusDraft["bonusType"], string> = {
+  ATTENDANCE: "Attendance bonus ($ per athlete attendance)",
+  SIGNUP: "Signup bonus ($ per athlete who joins/buys)",
+  REVENUE_SHARE: "Revenue share (% of revenue)",
+};
+const BONUS_SCOPES: Record<BonusDraft["bonusType"], ScopeType[]> = {
+  ATTENDANCE: ["CLASS", "EVENT"],
+  SIGNUP: ["CLASS", "MEMBERSHIP"],
+  REVENUE_SHARE: ["CLASS", "EVENT", "MEMBERSHIP", "PRIVATE_LESSON_TYPE"],
+};
+
+function scopeOptions(opts: CompOptions, t: ScopeType): Opt[] {
+  if (t === "CLASS") return opts.classes;
+  if (t === "EVENT") return opts.events;
+  if (t === "MEMBERSHIP") return opts.memberships;
+  return opts.lessonTypes;
+}
+
+function ScopePicker({
+  allowed,
+  opts,
+  scopes,
+  onChange,
+}: {
+  allowed: ScopeType[];
+  opts: CompOptions;
+  scopes: Scope[];
+  onChange: (s: Scope[]) => void;
+}) {
+  function toggle(scopeType: ScopeType, scopeId: string) {
+    const has = scopes.some((s) => s.scopeType === scopeType && s.scopeId === scopeId);
+    onChange(
+      has
+        ? scopes.filter((s) => !(s.scopeType === scopeType && s.scopeId === scopeId))
+        : [...scopes, { scopeType, scopeId }]
+    );
+  }
+  return (
+    <div className="space-y-2">
+      {allowed.map((t) => {
+        const list = scopeOptions(opts, t);
+        if (list.length === 0) return null;
+        return (
+          <div key={t}>
+            <p className="text-[11px] uppercase tracking-wider text-text-muted mb-1">
+              {t === "PRIVATE_LESSON_TYPE" ? "Private lessons" : t.charAt(0) + t.slice(1).toLowerCase() + "s"}
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              {list.map((o) => {
+                const active = scopes.some((s) => s.scopeType === t && s.scopeId === o.id);
+                return (
+                  <button
+                    type="button"
+                    key={o.id}
+                    onClick={() => toggle(t, o.id)}
+                    className={`text-xs px-2 py-1 rounded-md border ${
+                      active ? "border-brand bg-brand/10 text-brand" : "border-app-border text-text-muted hover:bg-app-bg"
+                    }`}
+                  >
+                    {o.name}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+      <p className="text-[11px] text-text-muted">Leave all unselected to apply club-wide / to everything this staff is tied to.</p>
+    </div>
+  );
+}
+
+function CompensationBuilder({ staffId }: { staffId: string }) {
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState("");
+  const [opts, setOpts] = useState<CompOptions>({ classes: [], events: [], memberships: [], lessonTypes: [] });
+  const [baseType, setBaseType] = useState<"SALARY" | "PER_CLASS" | "HOURLY">("HOURLY");
+  const [baseAmount, setBaseAmount] = useState("");
+  const [baseScopes, setBaseScopes] = useState<Scope[]>([]);
+  const [bonuses, setBonuses] = useState<BonusDraft[]>([]);
+
+  useEffect(() => {
+    fetch(`/api/staff/${staffId}/compensation`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (d?.options) setOpts(d.options);
+        if (d?.plan) {
+          setBaseType(d.plan.baseType);
+          setBaseAmount(String(d.plan.baseAmount ?? ""));
+          setBaseScopes(d.plan.baseScopes ?? []);
+          setBonuses(
+            (d.plan.bonuses ?? []).map((b: { bonusType: BonusDraft["bonusType"]; amount: number; scopes: Scope[] }) => ({
+              bonusType: b.bonusType,
+              amount: String(b.amount),
+              scopes: b.scopes ?? [],
+            }))
+          );
+        }
+        setLoading(false);
+      });
+  }, [staffId]);
+
+  function addBonus() {
+    setBonuses((b) => [...b, { bonusType: "ATTENDANCE", amount: "", scopes: [] }]);
+  }
+  function updateBonus(i: number, patch: Partial<BonusDraft>) {
+    setBonuses((b) => b.map((x, idx) => (idx === i ? { ...x, ...patch } : x)));
+  }
+  function removeBonus(i: number) {
+    setBonuses((b) => b.filter((_, idx) => idx !== i));
+  }
+
+  async function save() {
+    setSaving(true);
+    setError("");
+    setSaved(false);
+    const res = await fetch(`/api/staff/${staffId}/compensation`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        baseType,
+        baseAmount: parseFloat(baseAmount) || 0,
+        baseScopes: baseType === "PER_CLASS" || baseType === "HOURLY" ? baseScopes : [],
+        bonuses: bonuses
+          .filter((b) => b.amount.trim() !== "")
+          .map((b) => ({ bonusType: b.bonusType, amount: parseFloat(b.amount) || 0, scopes: b.scopes })),
+      }),
+    });
+    setSaving(false);
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      setError(typeof d.error === "string" ? d.error : "Save failed");
+      return;
+    }
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2500);
+  }
+
+  if (loading) return <p className="text-sm text-text-muted">Loading plan…</p>;
+
+  return (
+    <div className="space-y-4">
+      {/* Base */}
+      <div>
+        <p className="text-sm font-medium text-text-primary mb-1">Base compensation</p>
+        <div className="grid grid-cols-3 gap-2 mb-2">
+          {(["SALARY", "PER_CLASS", "HOURLY"] as const).map((t) => (
+            <button
+              type="button"
+              key={t}
+              onClick={() => setBaseType(t)}
+              className={`text-xs px-3 py-2 rounded-lg border ${
+                baseType === t ? "border-brand bg-brand/10 text-brand" : "border-app-border text-text-primary hover:bg-app-bg"
+              }`}
+            >
+              {t === "SALARY" ? "Salary (monthly)" : t === "PER_CLASS" ? "Per class" : "Hourly"}
+            </button>
+          ))}
+        </div>
+        <label className="block text-xs font-medium text-text-primary mb-1">
+          {baseType === "SALARY" ? "Monthly amount ($)" : baseType === "PER_CLASS" ? "Amount per class ($)" : "Hourly rate ($)"}
+        </label>
+        <input
+          type="number" min="0" step="0.01" value={baseAmount}
+          onChange={(e) => setBaseAmount(e.target.value)} placeholder="0.00"
+          className="w-40 px-3 py-2 border border-app-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand"
+        />
+        {(baseType === "PER_CLASS" || baseType === "HOURLY") && (
+          <div className="mt-2">
+            <p className="text-xs font-medium text-text-primary mb-1">Assigned classes (optional)</p>
+            <ScopePicker allowed={["CLASS"]} opts={opts} scopes={baseScopes} onChange={setBaseScopes} />
+          </div>
+        )}
+      </div>
+
+      {/* Bonuses */}
+      <div className="border-t border-app-border pt-3">
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-sm font-medium text-text-primary">Bonuses (stackable)</p>
+          <button type="button" onClick={addBonus} className="text-xs text-brand hover:underline">+ Add bonus</button>
+        </div>
+        {bonuses.length === 0 && <p className="text-xs text-text-muted">No bonuses. Add attendance, signup, or revenue-share bonuses.</p>}
+        <div className="space-y-3">
+          {bonuses.map((b, i) => (
+            <div key={i} className="border border-app-border rounded-lg p-3 space-y-2">
+              <div className="flex items-center gap-2">
+                <select
+                  value={b.bonusType}
+                  onChange={(e) =>
+                    updateBonus(i, { bonusType: e.target.value as BonusDraft["bonusType"], scopes: [] })
+                  }
+                  className="flex-1 px-2 py-1.5 border border-app-border rounded-lg text-sm bg-white"
+                >
+                  {(Object.keys(BONUS_LABEL) as BonusDraft["bonusType"][]).map((t) => (
+                    <option key={t} value={t}>{BONUS_LABEL[t]}</option>
+                  ))}
+                </select>
+                <button type="button" onClick={() => removeBonus(i)} className="text-text-muted hover:text-red-600 text-lg leading-none w-6">×</button>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-text-muted">{b.bonusType === "REVENUE_SHARE" ? "%" : "$"}</span>
+                <input
+                  type="number" min="0" step="0.01" value={b.amount}
+                  onChange={(e) => updateBonus(i, { amount: e.target.value })}
+                  placeholder={b.bonusType === "REVENUE_SHARE" ? "e.g. 10" : "e.g. 5.00"}
+                  className="w-32 px-2 py-1.5 border border-app-border rounded-lg text-sm"
+                />
+              </div>
+              <ScopePicker
+                allowed={BONUS_SCOPES[b.bonusType]}
+                opts={opts}
+                scopes={b.scopes}
+                onChange={(s) => updateBonus(i, { scopes: s })}
+              />
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {error && <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</div>}
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={save}
+          disabled={saving}
+          className="px-4 py-2 bg-brand text-white rounded-lg text-sm font-medium hover:bg-brand-hover disabled:opacity-50"
+        >
+          {saving ? "Saving…" : "Save compensation plan"}
+        </button>
+        {saved && <span className="text-sm text-green-600">Saved</span>}
       </div>
     </div>
   );

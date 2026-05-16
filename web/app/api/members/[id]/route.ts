@@ -43,8 +43,41 @@ export async function GET(_: Request, context: { params: Promise<{ id: string }>
     where: { id: params.id, clubId: session.user.clubId, deletedAt: null },
     include: {
       membership: true,
-      subscriptions: { include: { membership: true } },
-      transactions: { orderBy: { createdAt: "desc" }, take: 10 },
+      subscriptions: {
+        include: { membership: { select: { name: true } } },
+        orderBy: { createdAt: "desc" },
+      },
+      transactions: { orderBy: { createdAt: "desc" }, take: 25 },
+      bookings: {
+        orderBy: { createdAt: "desc" },
+        take: 50,
+        include: {
+          event: { select: { id: true, name: true, type: true, startsAt: true, endsAt: true } },
+        },
+      },
+      attendanceRecords: {
+        orderBy: { createdAt: "desc" },
+        take: 50,
+        include: {
+          classSession: {
+            select: {
+              startsAt: true,
+              recurringClass: { select: { name: true } },
+            },
+          },
+        },
+      },
+      eventRegistrations: {
+        orderBy: { createdAt: "desc" },
+        take: 25,
+        include: { event: { select: { id: true, name: true, startsAt: true } } },
+      },
+      relationshipsFrom: {
+        include: { related: { select: { id: true, firstName: true, lastName: true, status: true } } },
+      },
+      relationshipsTo: {
+        include: { member: { select: { id: true, firstName: true, lastName: true, status: true } } },
+      },
       guardian: {
         include: {
           members: {
@@ -56,7 +89,18 @@ export async function GET(_: Request, context: { params: Promise<{ id: string }>
     },
   });
   if (!member) return NextResponse.json({ error: "Not found" }, { status: 404 });
-  return NextResponse.json(member);
+
+  // Flatten relationships into one directionless list for the UI. Types are
+  // stored from the `member` side; invert the asymmetric ones when this member
+  // is on the `related` side so the label reads correctly.
+  const invert: Record<string, string> = { PARENT: "CHILD", CHILD: "PARENT" };
+  const relationships = [
+    ...member.relationshipsFrom.map((r) => ({ id: r.id, type: r.type, note: r.note, other: r.related })),
+    ...member.relationshipsTo.map((r) => ({ id: r.id, type: invert[r.type] ?? r.type, note: r.note, other: r.member })),
+  ];
+  const { relationshipsFrom: _f, relationshipsTo: _t, ...rest } = member;
+  void _f; void _t;
+  return NextResponse.json({ ...rest, relationships });
 }
 
 export async function PATCH(req: Request, context: { params: Promise<{ id: string }> }) {

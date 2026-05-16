@@ -89,6 +89,7 @@ export async function GET(req: Request) {
   type CalItem = {
     kind: "event" | "class" | "private";
     id: string;
+    refId: string;         // event id / recurring-class id / booking id (for detail fetch + deep links)
     name: string;
     startsAt: string;
     endsAt: string;
@@ -107,6 +108,7 @@ export async function GET(req: Request) {
     items.push({
       kind: "event",
       id: e.id,
+      refId: e.id,
       name: e.name,
       startsAt: e.startsAt.toISOString(),
       endsAt: e.endsAt.toISOString(),
@@ -122,6 +124,7 @@ export async function GET(req: Request) {
     items.push({
       kind: "class",
       id: s.id,
+      refId: s.classId,
       name: s.recurringClass.name,
       startsAt: s.startsAt.toISOString(),
       endsAt: s.endsAt.toISOString(),
@@ -138,6 +141,7 @@ export async function GET(req: Request) {
     items.push({
       kind: "private",
       id: b.id,
+      refId: b.id,
       name: b.lessonType.title,
       startsAt: b.confirmedStartAt.toISOString(),
       endsAt: b.confirmedEndAt.toISOString(),
